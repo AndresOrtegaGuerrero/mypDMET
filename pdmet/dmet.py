@@ -1,7 +1,7 @@
 #!/usr/bin/env python -u 
 '''
 pDMET: Density Matrix Embedding theory for Periodic Systems
-Copyright (C) 2018 Hung Q. Pham. All Rights Reserved.
+Copyright (C) 2022 Abhishek Mitra and Hung Q. Pham. All Rights Reserved.
 A few functions in pDMET are modifed from QC-DMET Copyright (C) 2015 Sebastian Wouters
 
 Licensed under the Apache License, Version 2.0 (the "License");
