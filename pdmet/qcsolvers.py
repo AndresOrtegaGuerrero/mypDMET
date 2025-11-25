@@ -590,7 +590,12 @@ class QCsolvers:
         """
         Density Matrix Renormalization Group using CheMPS2 library
         """
-
+        try:
+            import PyCheMPS2  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "PyCheMPS2 module not found. Please install CheMPS2 and its Python interface."
+            )
         Norb = self.Norb
         Nimp = self.Nimp
         FOCKcopy = self.FOCK.copy() - self.chempot

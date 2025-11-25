@@ -9,6 +9,12 @@ pDMET can compute the ground-state energy as well as the quasiparticle band stru
 - Scipy 0.10 or higher
 - wannier90 and pyWannier90 library
 
+# DMRG solver
+The current implementation supports the CheMPS2 DMRG solver.
+To use this solver, you must first download, compile, and install CheMPS2 on your system.
+
+Once the CheMPS2 library is successfully compiled, ensure that your environment and build configuration correctly point to the CheMPS2 installation so the solver can be detected and used.
+
 # Current function
 - One-shot and self-consistent pDMET calculation
 - Computing electronic band structure

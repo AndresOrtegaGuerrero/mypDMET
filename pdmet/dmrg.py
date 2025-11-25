@@ -24,9 +24,15 @@ import sys
 import os
 import ctypes
 from functools import reduce
-import PyCheMPS2
 from pyscf import ao2mo
 from pyscf import lib
+
+try:
+    import PyCheMPS2
+except ImportError:
+    raise ImportError(
+        "Cannot find PyCheMPS2 module. Please install CheMPS2 with Python interface from https://github.com/SebWouters/CheMPS2"
+    )
 
 
 class DMRG:
@@ -81,6 +87,7 @@ class DMRG:
 
     def run(self):
         # CheMPS2 calculation
+
         Initializer = PyCheMPS2.PyInitialize()
         Initializer.Init()
         Group = 0
