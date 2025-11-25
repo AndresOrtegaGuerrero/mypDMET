@@ -1,5 +1,5 @@
-#!/usr/bin/env python -u 
-'''
+#!/usr/bin/env python -u
+"""
 pDMET: Density Matrix Embedding theory for Periodic Systems
 Copyright (C) 2018 Hung Q. Pham. All Rights Reserved.
 A few functions in pDMET are modifed from QC-DMET Copyright (C) 2015 Sebastian Wouters
@@ -17,25 +17,30 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Email: Hung Q. Pham <pqh3.14@gmail.com>
-'''
+"""
 
-import os, datetime
+import datetime
 import pdmet
 import sys
-            
-def print_header():  
-    print("-----------------------------------------------------------------") 
+
+
+def print_header():
+    print("-----------------------------------------------------------------")
     print("   pDMET: Density Matrix Embedding Theory for Periodic Systems")
-    print("                            Version: %s" % (pdmet.__version__))        
+    print("                            Version: %s" % (pdmet.__version__))
     print("                         Author: Hung Q. Pham")
-    print("                       Email: pqh3.14@gmail.com")    
-    print("                 Current time: %s" % (datetime.datetime.now().strftime("%Y/%m/%d - %H:%M:%S")))    
+    print("                       Email: pqh3.14@gmail.com")
+    print(
+        "                 Current time: %s"
+        % (datetime.datetime.now().strftime("%Y/%m/%d - %H:%M:%S"))
+    )
     print("-----------------------------------------------------------------")
     sys.stdout.flush()
-    
+
+
 def print_msg(msg=None, *kargs):
     if msg is None:
-        print() 
+        print()
     else:
-        print(msg, *kargs)  
+        print(msg, *kargs)
     sys.stdout.flush()

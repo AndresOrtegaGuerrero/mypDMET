@@ -4,7 +4,7 @@
 
 #IncludeRegexComplain: ^$
 
-#IncludeRegexTransform: 
+#IncludeRegexTransform:
 
 /home/mitra054/.conda/envs/msi2/include/lawrap/blas.h
 fortran.h
@@ -617,4 +617,3 @@ lawrap/lapack.h
 -
 omp.h
 -
-

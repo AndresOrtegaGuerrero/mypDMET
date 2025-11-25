@@ -3,7 +3,7 @@ project(cpp_libdmet)
 
 set(anaconda "/home/mitra054/.conda/envs/msi2")
 
-# Set INCLUDE and LIB 
+# Set INCLUDE and LIB
 LINK_DIRECTORIES(/home/mitra054/.conda/envs/msi2/lib)
 INCLUDE_DIRECTORIES(/home/mitra054/.conda/envs/msi2/include)
 

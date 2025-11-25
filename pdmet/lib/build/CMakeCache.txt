@@ -233,7 +233,7 @@ OpenMP_gomp_LIBRARY:FILEPATH=/software/gcc-10.2.0-el8-x86_64/lib64/libgomp.so
 //Path to the pthread library for OpenMP
 OpenMP_pthread_LIBRARY:FILEPATH=/lib64/libpthread.so
 
-//C++ standard flag, e.g. -std=c++11, -std=c++14, /std:c++14. 
+//C++ standard flag, e.g. -std=c++11, -std=c++14, /std:c++14.
 // Defaults to C++14 mode.
 PYBIND11_CPP_STANDARD:STRING=-std=c++14
 
@@ -471,4 +471,3 @@ PYBIND11_LTO_LINKER_FLAGS:INTERNAL=-flto
 PYTHON_EXECUTABLE-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: PYTHON_LIBRARY
 PYTHON_LIBRARY-ADVANCED:INTERNAL=1
-
