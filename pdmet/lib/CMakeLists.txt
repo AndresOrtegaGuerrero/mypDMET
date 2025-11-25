@@ -8,41 +8,45 @@ INCLUDE_DIRECTORIES(/user-environment/env/default/include) # Adjust this path as
 # Find the LAWrap for mkl_blas/lapack, pybind11
 find_package(LAWrap CONFIG QUIET)
 
-if(NOT LAWrap_FOUND)
-    message(STATUS "LAWrap not found in system, searching in local directory...")
-    list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lawrap")
-    find_package(LAWrap CONFIG REQUIRED)
+
+if (LAWrap_FOUND)
+    message(STATUS "Using system LAWrap")
+    target_link_libraries(libdmet PUBLIC LAWrap)
+else()
+    message(STATUS "Using bundled LAWrap from ${CMAKE_CURRENT_SOURCE_DIR}/lawrap")
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lawrap)
 endif()
 
 message(STATUS "Found LAWrap: ${LAWrap_CONFIG}")
 
 # Set python
 if(DEFINED ENV{CONDA_PREFIX})
-    set(Python3_ROOT_DIR "$ENV{CONDA_PREFIX}")
-    message(STATUS "Using Conda Python from: $ENV{CONDA_PREFIX}")
+    set(PYTHON_EXECUTABLE "$ENV{CONDA_PREFIX}/bin/python")
+    message(STATUS "Using Conda Python: ${PYTHON_EXECUTABLE}")
 elseif(DEFINED ENV{VIRTUAL_ENV})
-    set(Python3_ROOT_DIR "$ENV{VIRTUAL_ENV}")
-    message(STATUS "Using venv Python from: $ENV{VIRTUAL_ENV}")
+    set(PYTHON_EXECUTABLE "$ENV{VIRTUAL_ENV}/bin/python")
+    message(STATUS "Using venv Python: ${PYTHON_EXECUTABLE}")
+else()
+    # Fall back to system python
+    find_package(Python COMPONENTS Interpreter Development REQUIRED)
+    set(PYTHON_EXECUTABLE "${Python_EXECUTABLE}")
+    message(STATUS "Using system Python: ${PYTHON_EXECUTABLE}")
 endif()
 
-set(Python3_FIND_VIRTUALENV FIRST)
-set(Python3_FIND_STRATEGY LOCATION)
-
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-message(STATUS "Python executable: ${Python3_EXECUTABLE}")
-
-# Get Python site-packages directory
 execute_process(
-    COMMAND ${Python3_EXECUTABLE} -c "import site; print(site.getsitepackages()[0])"
-    OUTPUT_VARIABLE Python3_SITELIB
+    COMMAND ${PYTHON_EXECUTABLE} -c "import site; print(site.getsitepackages()[0])"
+    OUTPUT_VARIABLE PYTHON_SITE_PACKAGES
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
-message(STATUS "Python site-packages: ${Python3_SITELIB}")
+message(STATUS "Python site-packages: ${PYTHON_SITE_PACKAGES}")
 
 # Look for pybind11 in site-packages
+set(PYBIND11_INCLUDE_DIR "${PYTHON_SITE_PACKAGES}/pybind11/include")
+message(STATUS "PyBind11 headers: ${PYBIND11_INCLUDE_DIR}")
+
 set(pybind11_DIR "${Python3_SITELIB}/pybind11/share/cmake/pybind11")
 find_package(pybind11 CONFIG REQUIRED)
-message(STATUS "Found pybind11: ${pybind11_CONFIG}")
+message(STATUS "Found pybind11: ${pybind11_DIR}")
 
 # Openmp
 include(FindOpenMP)
