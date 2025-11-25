@@ -7,8 +7,23 @@ pDMET can compute the ground-state energy as well as the quasiparticle band stru
 - Python 3.5 or higher
 - Numpy 1.8.0 or higher
 - Scipy 0.10 or higher
+- PySCF 2.11.0 or higher
 - wannier90 and pyWannier90 library
 
+# Installation
+
+```bash
+git clone https://github.com/AndresOrtegaGuerrero/mypDMET.git
+cd mypDMET
+```
+
+## Library installation
+Please install and compile the libdmet module first in pdmet/lib
+
+## Install pdmet
+```python
+pip install .
+```
 # DMRG solver
 The current implementation supports the CheMPS2 DMRG solver.
 To use this solver, you must first download, compile, and install CheMPS2 on your system.

@@ -1,9 +1,6 @@
 import numpy as np
 from scipy.misc import derivative
 from pyscf.pbc import gto, scf, df
-import sys
-
-sys.path.append("/panfs/roc/groups/6/gagliard/phamx494/CPPlib/pyWannier90")
 import pywannier90
 from pDMET.pdmet import dmet
 
