@@ -24,7 +24,7 @@ import sys
 import os
 import ctypes
 from pyscf import lib, gto, ao2mo, scf, cc, fci, mcscf, mrpt
-from pyscf.shciscf import shci
+
 from pyscf.cc import ccsd_t_lambda_slow as ccsd_t_lambda
 from pyscf.cc import ccsd_t_rdm_slow as ccsd_t_rdm
 
@@ -911,7 +911,13 @@ class QCsolvers:
         """
         SHCI solver from PySCF
         """
-
+        try:
+            from pyscf.shciscf import shci
+        except ImportError:
+            raise ImportError(
+                "pyscf.shciscf module not found. Please install PySCF with SHCI support.\n"
+                "This typically means settings.py is missing in pyscf.shciscf.\n"
+            )
         Nimp = self.Nimp
         FOCKcopy = self.FOCK.copy()
 
