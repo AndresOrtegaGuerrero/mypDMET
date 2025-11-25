@@ -7,13 +7,13 @@ INCLUDE_DIRECTORIES(/user-environment/env/default/include) # Adjust this path as
 
 # Find the LAWrap for mkl_blas/lapack, pybind11
 
-find_package(LAWrap CONFIG QUIET)
+
 if (LAWrap_FOUND)
     message(STATUS "Using system LAWrap")
     target_link_libraries(libdmet PUBLIC LAWrap)
 else()
     message(STATUS "Using bundled LAWrap from ${CMAKE_CURRENT_SOURCE_DIR}/lawrap")
-    include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lawrap)
 endif()
 
 message(STATUS "Found LAWrap: ${LAWrap_CONFIG}")
@@ -38,6 +38,10 @@ execute_process(
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 message(STATUS "Python site-packages: ${PYTHON_SITE_PACKAGES}")
+
+# Look for pybind11 in site-packages
+set(PYBIND11_INCLUDE_DIR "${PYTHON_SITE_PACKAGES}/pybind11/include")
+message(STATUS "PyBind11 headers: ${PYBIND11_INCLUDE_DIR}")
 
 set(pybind11_DIR "${Python3_SITELIB}/pybind11/share/cmake/pybind11")
 find_package(pybind11 CONFIG REQUIRED)
