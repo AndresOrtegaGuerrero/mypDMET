@@ -1,5 +1,5 @@
-#!/usr/bin/env python -u 
-'''
+#!/usr/bin/env python -u
+"""
 pDMET: Density Matrix Embedding theory for Periodic Systems
 Copyright (C) 2018 Hung Q. Pham. All Rights Reserved.
 A few functions in pDMET are modifed from QC-DMET Copyright (C) 2015 Sebastian Wouters
@@ -17,17 +17,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Email: Hung Q. Pham <pqh3.14@gmail.com>
-'''
+"""
 
-import os, datetime
-            
-            
+import os
+import datetime
+
+
 def check_exist(filename):
-    '''Check if a file exists in the running directory '''
-    cwd = os.getcwd()         
-    exist = os.path.exists(cwd + '/' + filename)
+    """Check if a file exists in the running directory"""
+    cwd = os.getcwd()
+    exist = os.path.exists(cwd + "/" + filename)
     return exist
-    
+
+
 def current_time():
     return datetime.datetime.now().strftime("%Y/%m/%d - %H:%M:%S")
- 

@@ -6,5 +6,4 @@ CXX_FLAGS =  -fopenmp -fPIC -fvisibility=hidden   -std=c++11 -flto -fno-fat-lto-
 
 CXX_DEFINES = -Dlibdmet_EXPORTS
 
-CXX_INCLUDES = -I/home/mitra054/.conda/envs/msi2/include -I/home/mitra054/.conda/envs/msi3/include/python3.7m 
-
+CXX_INCLUDES = -I/home/mitra054/.conda/envs/msi2/include -I/home/mitra054/.conda/envs/msi3/include/python3.7m
