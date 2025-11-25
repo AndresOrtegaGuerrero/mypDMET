@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Library
+lib/build/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+
+# Tool caches
+.ruff_cache/
+
+dist/
+*.egg-info/
+*.egg
+MANIFEST
