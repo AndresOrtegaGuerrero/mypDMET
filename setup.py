@@ -16,6 +16,7 @@ if __name__ == "__main__":
             "pybind11>=2.2.3",
             "pyscf>=2.11.0",
             "pyscf-dmrgscf @ git+https://github.com/pyscf/dmrgscf",
+            "pyscf-shciscf @ git+https://github.com/pyscf/shciscf",
         ],
         extras_require={
             "docs": [
