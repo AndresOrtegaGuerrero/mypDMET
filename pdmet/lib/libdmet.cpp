@@ -181,7 +181,7 @@ py::array_t<double> rhf_response(const int Norb, const int Nterms, const int num
 	std::vector<std::complex<double>>::const_iterator last = eigvecs.begin() + size;
 	std::vector<std::complex<double>> virt(first, last);
 
-#pragma omp parallel default(none) shared(H1start,H1row,H1col,virt,eigvals,eigvecs,rdm_deriv)
+#pragma omp parallel default(none) shared(H1start, H1row, H1col, virt, eigvals, eigvecs, rdm_deriv, size, Norb, numPairs, Nterms, nVir)
 {
 	std::vector<std::complex<double>> work1(size);
 	std::vector<std::complex<double>> work2(Norb*numPairs);
