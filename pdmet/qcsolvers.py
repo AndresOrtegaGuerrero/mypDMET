@@ -23,7 +23,8 @@ import numpy as np
 import sys
 import os
 import ctypes
-from pyscf import lib, gto, ao2mo, scf, cc, fci, mcscf, mrpt, cornell_shci
+from pyscf import lib, gto, ao2mo, scf, cc, fci, mcscf, mrpt
+from pyscf.shciscf import shci
 from pyscf.cc import ccsd_t_lambda_slow as ccsd_t_lambda
 from pyscf.cc import ccsd_t_rdm_slow as ccsd_t_rdm
 
@@ -930,7 +931,7 @@ class QCsolvers:
             )
 
         # Create and solve the SHCI object
-        mch = cornell_shci.SHCISCF(self.mf, self.Norb, self.mol.nelectron)
+        mch = shci.SHCISCF(self.mf, self.Norb, self.mol.nelectron)
         mch.fcisolver.mpiprefix = ""
         mch.fcisolver.nPTiter = 0  # Turn off perturbative calc.
         mch.fcisolver.sweep_iter = [0, 3]
