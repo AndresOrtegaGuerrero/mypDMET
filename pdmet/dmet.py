@@ -26,9 +26,7 @@ from pdmet import localbasis, qcsolvers, diis, df_hamiltonian
 from pdmet.schmidtbasis import get_bath_using_RHF_1RDM
 from pdmet.tools import tchkfile, tplot, tprint, tunix, misc
 from pdmet.lib.build import libdmet
-import sys
 
-sys.path.append("/panfs/roc/groups/6/gagliard/phamx494/pyWannier90/src")
 import pywannier90
 
 
