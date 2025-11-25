@@ -6,7 +6,6 @@ LINK_DIRECTORIES(/user-environment/env/default/lib) # Adjust this path as needed
 INCLUDE_DIRECTORIES(/user-environment/env/default/include) # Adjust this path as needed
 
 # Find the LAWrap for mkl_blas/lapack, pybind11
-find_package(LAWrap CONFIG QUIET)
 
 
 if (LAWrap_FOUND)
