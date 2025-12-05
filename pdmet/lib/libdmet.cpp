@@ -23,8 +23,8 @@ Email: Hung Q. Pham <pqh3.14@gmail.com>
 #include <pybind11/numpy.h>
 #include <fstream>
 #include <iostream>
-#include <lawrap/blas.h>
-#include <lawrap/lapack.h>
+#include "lawrap/blas.h"
+#include "lawrap/lapack.h"
 #include <omp.h>
 
 
