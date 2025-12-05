@@ -19,7 +19,18 @@ limitations under the License.
 Email: Hung Q. Pham <pqh3.14@gmail.com>
 """
 
+import numpy as np
 from pyscf.lib.chkfile import save, load
+
+
+def _fix_empty(obj):
+    if obj is None:
+        return np.array([], dtype=float)
+    if isinstance(obj, (list, tuple)) and len(obj) == 0:
+        return np.array([], dtype=float)
+    if isinstance(obj, dict) and len(obj) == 0:
+        return np.array([], dtype=float)
+    return obj
 
 
 def symmetrize_kmf(cell, kmf, kmesh):
@@ -171,7 +182,7 @@ def save_w90(w90, chkfile):
         "wann_spreads": wann_spreads,
         "spread": spread,
     }
-
+    w90_dic = {k: _fix_empty(v) for k, v in w90_dic.items()}
     save(chkfile, "w90", w90_dic)
 
 
