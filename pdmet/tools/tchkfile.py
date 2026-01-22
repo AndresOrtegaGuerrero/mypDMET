@@ -99,7 +99,7 @@ def load_kmf(cell, kmf, kmesh, chkfile, max_memory=4000):
 
     class fake_kmf:
         def __init__(self, save_kmf):
-            if save_kmf["exxdiv"] == "None":
+            if save_kmf["exxdiv"] == "None" or save_kmf["exxdiv"] == b"None":
                 self.exxdiv = None
                 kmf.exxdiv = None
             else:
