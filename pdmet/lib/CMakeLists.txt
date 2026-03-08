@@ -5,7 +5,7 @@ project(cpp_libdmet)
 #LINK_DIRECTORIES(/user-environment/env/default/lib) # Adjust this path as needed
 #INCLUDE_DIRECTORIES(/user-environment/env/default/include) # Adjust this path as needed
 
-
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 if (LAWRAP_INCLUDE_DIR)
     message(STATUS "Found LAWrap in: ${LAWRAP_INCLUDE_DIR}")

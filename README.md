@@ -10,15 +10,39 @@ pDMET can compute the ground-state energy as well as the quasiparticle band stru
 - PySCF 2.11.0 or higher
 - wannier90 and pyWannier90 library
 
+
+# Set environment variables
+Add to your `~/.bashrc` or `~/.zshrc`:
+```bash
+export W90DIR="/path/to/wannier90"
+export PYWANNIER90DIR="/path/to/pyWannier90"
+```
+Then reload:
+```bash
+source ~/.zshrc   # or ~/.bashrc on Linux
+```
+
+# Build the C extension
+
+```bash
+cd pdmet/lib
+mkdir -p build && cd build
+cmake ..
+make
+cd ../../..
+```
+
+If successful you will see:
+```
+pdmet/lib/build/libdmet.cpython-310-x86_64-linux-gnu.so
+```
 # Installation
 
 ```bash
 git clone https://github.com/AndresOrtegaGuerrero/mypDMET.git
 cd mypDMET
+pip install -e .
 ```
-
-## Library installation
-Please install and compile the libdmet module first in pdmet/lib
 
 ## Install pdmet
 ```python

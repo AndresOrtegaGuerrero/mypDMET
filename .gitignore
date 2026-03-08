@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyc
+*.pyo
 
 # Library
 lib/build/
@@ -11,11 +13,13 @@ lib/build/
 .DS_Store
 .AppleDouble
 .LSOverride
-
+.vscode/
+.idea/
 
 # Tool caches
 .ruff_cache/
 
+build/
 dist/
 *.egg-info/
 *.egg

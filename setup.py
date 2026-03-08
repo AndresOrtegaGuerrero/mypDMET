@@ -1,4 +1,19 @@
 import setuptools
+import glob
+
+
+# Library libdmet compiled check
+so_files = glob.glob("pdmet/lib/*.so")
+if not so_files:
+    raise RuntimeError(
+        "The library libdmet is not compiled - please build it first:\n\n"
+        "   cd pdmet/lib\n"
+        "   mkdir -p build && cd build\n"
+        "   cmake ..\n"
+        "   make\n"
+        "   cd ../../\n"
+        "Then re-run: pip install -e .\n"
+    )
 
 if __name__ == "__main__":
     setuptools.setup(
@@ -10,6 +25,7 @@ if __name__ == "__main__":
         url="https://github.com/hungpham2017/pDMET.git",
         license="Apache 2.0",
         packages=setuptools.find_packages(),
+        package_data={"pdmet": ["lib/*.so"]},
         install_requires=[
             "numpy>=1.15.2",
             "scipy>=1.1.0",
