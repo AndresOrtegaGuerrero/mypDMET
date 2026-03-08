@@ -549,13 +549,15 @@ class Local:
         Compute the k-space Wannier orbitals
         """
         ao2lo = []
+        u_matrix_opt = np.transpose(w90.U_matrix_opt, axes=(2, 1, 0))
+        u_matrix = np.transpose(w90.U_matrix, axes=(2, 1, 0))
         for kpt in range(self.Nkpts):
             mo_included = w90.mo_coeff_kpts[kpt][:, w90.band_included_list]
             mo_in_window = w90.lwindow[kpt]
             C_opt = mo_included[:, mo_in_window].dot(
-                w90.U_matrix_opt[kpt][:, mo_in_window].T
+                u_matrix_opt[kpt][:, mo_in_window].T
             )
-            ao2lo.append(C_opt.dot(w90.U_matrix[kpt].T))
+            ao2lo.append(C_opt.dot(u_matrix[kpt].T))
 
         ao2lo = np.asarray(ao2lo, dtype=np.complex128)
         return ao2lo

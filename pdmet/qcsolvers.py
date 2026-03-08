@@ -36,7 +36,7 @@ from pyscf.mcpdft.otpd import get_ontop_pair_density
 from pyscf.mcpdft.otfnal import transfnal, ftransfnal
 
 # from pyscf.pbc import gto, scf, cc  # Confirm if needed
-from pyscf.mcpdft import mcpdft
+from pyscf import mcpdft
 from pyscf.mcpdft.mcpdft import _get_e_decomp
 from pdmet import localbasis
 from pyscf.mcpdft import _dms
