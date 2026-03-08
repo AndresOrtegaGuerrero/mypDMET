@@ -178,13 +178,13 @@ def get_wannier(w90, supercell=[1, 1, 1], grid=[50, 50, 50]):
     kpts = w90.cell.get_abs_kpts(w90.kpt_latt_loc)
 
     u_mo = []
+    u_matrix_opt = np.transpose(w90.U_matrix_opt, axes=(2, 1, 0))
+    u_matrix = np.transpose(w90.U_matrix, axes=(2, 1, 0))
     for k_id in range(w90.num_kpts_loc):
         mo_included = w90.mo_coeff_kpts[k_id][:, w90.band_included_list]
         mo_in_window = w90.lwindow[k_id]
-        C_opt = mo_included[:, mo_in_window].dot(
-            w90.U_matrix_opt[k_id][:, mo_in_window].T
-        )
-        C_tildle = C_opt.dot(w90.U_matrix[k_id].T)
+        C_opt = mo_included[:, mo_in_window].dot(u_matrix_opt[k_id][:, mo_in_window].T)
+        C_tildle = C_opt.dot(u_matrix[k_id].T)
         kpt = kpts[k_id]
         ao = numint.eval_ao(w90.cell, grids_coor, kpt=kpt)
         u_ao = lib.einsum("x,xi->xi", np.exp(-1j * np.dot(grids_coor, kpt)), ao)
@@ -204,11 +204,9 @@ def get_wannier(w90, supercell=[1, 1, 1], grid=[50, 50, 50]):
     Ts = np.asarray(
         Ts, order="C"
     )  # lib.cartesian_prod store array in Fortran order in memory
-    WFs = pywannier90.libwannier90.get_WFs(
+    WFs = pywannier90.get_WF0s(
         w90.kpt_latt_loc.shape[0],
         w90.kpt_latt_loc,
-        Ts.shape[0],
-        Ts,
         supercell,
         grid,
         u_mo,
