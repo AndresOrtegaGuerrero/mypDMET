@@ -25,7 +25,7 @@ from scipy import optimize
 from pdmet import localbasis, qcsolvers, diis, df_hamiltonian
 from pdmet.schmidtbasis import get_bath_using_RHF_1RDM
 from pdmet.tools import tchkfile, tplot, tprint, tunix, misc
-from pdmet.lib.build import libdmet
+from pdmet.lib import libdmet
 
 import pywannier90
 
