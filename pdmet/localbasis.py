@@ -78,22 +78,35 @@ class Local:
         for kpt, mo_coeff in enumerate(kmf.mo_coeff_kpts):
             core_band = np.asarray(mo_coeff.shape[1] * [True])
             core_band[w90.band_included_list] = False
-            coreDMmo = kmf.mo_occ_kpts[kpt][core_band].copy()
-            mo_k = mo_coeff[:, core_band]
-            coreDMao = reduce(np.dot, (mo_k, np.diag(coreDMmo), mo_k.T.conj()))
-            coreDM_kpts.append(coreDMao)
+
+            if not np.any(core_band):
+                nao = mo_coeff.shape[0]
+                coreDM_kpts.append(np.zeros((nao, nao), dtype=np.complex128))
+            else:
+                coreDMmo = kmf.mo_occ_kpts[kpt][core_band].copy()
+                mo_k = mo_coeff[:, core_band]
+                coreDMao = reduce(np.dot, (mo_k, np.diag(coreDMmo), mo_k.T.conj()))
+                coreDM_kpts.append(coreDMao)
 
         self.coreDM_kpts = np.asarray(coreDM_kpts, dtype=np.complex128)
-        if self._is_KROHF:
-            dma = dmb = self.coreDM_kpts * 0.5
-            coreJK_kpts_ab = kmf.get_veff(
-                cell, dm_kpts=[dma, dmb], hermi=1, kpts=self.kpts, kpts_band=None
-            )
-            coreJK_kpts = 0.5 * (coreJK_kpts_ab[0] + coreJK_kpts_ab[1])
+
+        has_core_bands = np.any(self.coreDM_kpts != 0.0)
+        if has_core_bands:
+            if self._is_KROHF:
+                dma = dmb = self.coreDM_kpts * 0.5
+                coreJK_kpts_ab = kmf.get_veff(
+                    cell, dm_kpts=[dma, dmb], hermi=1, kpts=self.kpts, kpts_band=None
+                )
+                coreJK_kpts = 0.5 * (coreJK_kpts_ab[0] + coreJK_kpts_ab[1])
+            else:
+                coreJK_kpts = kmf.get_veff(
+                    cell, self.coreDM_kpts, hermi=1, kpts=self.kpts, kpts_band=None
+                )
         else:
-            coreJK_kpts = kmf.get_veff(
-                cell, self.coreDM_kpts, hermi=1, kpts=self.kpts, kpts_band=None
-            )
+            # No core bands — coreJK contribution is zero
+            nkpts = len(self.kpts)
+            nao = self.coreDM_kpts.shape[-1]
+            coreJK_kpts = np.zeros((nkpts, nao, nao), dtype=np.complex128)
 
         # Core energy from the frozen orbitals
         self.e_core = (
