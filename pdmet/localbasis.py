@@ -266,6 +266,12 @@ class Local:
     def get_core_JK(self, ao2core, loc_core_1RDM):
         """Get JK projected into the core (unentangled) basis"""
         ao_core_kpts = self.loc_2_ao(loc_core_1RDM)
+
+        # For Debugging
+        if ao_core_kpts.size == 0 or np.allclose(ao_core_kpts, 0):
+            print("[DMET WARNING] Core density matrix is zero → skipping core JK")
+            return np.zeros((ao2core.shape[-1], ao2core.shape[-1]))
+
         if self._is_KROHF:
             dma = dmb = ao_core_kpts * 0.5
             ao_core_JK_ab = self.kmf.get_veff(

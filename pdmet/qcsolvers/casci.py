@@ -1,0 +1,113 @@
+from pdmet.qcsolvers.casbase import BaseCASSolver
+from pyscf import mcscf, mrpt, lib
+import numpy as np
+
+
+class CASCISolver(BaseCASSolver):
+    """CASCI - FCI within a active space"""
+
+    def __init__(self, settings, is_KROHF=False):
+        super().__init__(settings, is_KROHF)
+        self.mo = None
+        self.mo_nat = None
+        cas_nelec, cas_norb = self._cas_sizes()
+        self.mc = mcscf.CASCI(self.mf, cas_norb, cas_nelec)
+        self.mc.verbose = settings.verbose
+        self.mc.max_memory = settings.max_memory
+        self.mc.natorb = True
+
+    def kernel(self, fci_solver="FCI"):
+        """
+        Run CASCI in the embedding basis
+        fci_solver : str - 'FCI' or 'ChemMPS2' (For DMRG-CI)
+
+        Returns
+        -------
+        e_cell   : float        — energy per unit cell
+        e_solver : float        — CASCI total energy (tuple if nevpt2_roots set)
+        RDM1     : (Norb, Norb) — 1-RDM in local basis
+        """
+
+        self._setup_mf()
+        cas_nelec, cas_norb = self._cas_sizes()
+        self._setup_cas_object(self.mc, cas_norb, cas_nelec)
+        self._set_fci_solver(fci_solver)
+        self.mc.fcisolver.nroots = self.settings.nroots
+        mo = self._mo_guess(self.mc)
+        e_tot, _, fcivec = self.mc.kernel(mo)[:3]
+
+        self.ci = fcivec
+        self.mo_nat = self.mc.mo_coeff
+
+        if not self.mc.converged:
+            print("WARNING: CASCI did not converge")
+        self.mo = self.mc.mo_coeff
+
+        if self.settings.nroots == 1:
+            e_cell, RDM1 = self._single_root(fcivec, cas_norb)
+        else:
+            e_cell, RDM1 = self._multi_root(fcivec, cas_norb, e_tot)
+
+        if self.settings.nevpt2_roots is not None:
+            e_tot = self._run_nevpt2(cas_norb, cas_nelec, e_tot, fci_solver)
+        return e_cell, e_tot, RDM1
+
+    def _single_root(self, fcivec, cas_norb):
+        self.SS, _ = mcscf.spin_square(self.mc)
+        # Fast Implementation
+        RDM1 = self._cas_rdm1_to_local(fcivec, self.mc, cas_norb)
+        e_cell = self.kmf_ecore + self._impurity_energy_from_cas(
+            fcivec, self.mc, cas_norb, RDM1
+        )
+
+        return e_cell, RDM1
+
+    def _multi_root(self, fcivec, cas_norb, e_tot):
+        RDM1s, e_cells, ss_list = [], [], []
+        for i, civec in enumerate(fcivec):
+            rdm1 = self._cas_rdm1_to_local(civec, self.mc, cas_norb)
+            e_imp = self.kmf_ecore + self._impurity_energy_from_cas(
+                civec, self.mc, cas_norb, rdm1
+            )
+            ss = self.mc.fcisolver.spin_square(civec, cas_norb, self.mc.nelecas)[0]
+            print(
+                f"  Root {i}: E(CASCI)={e_tot[i]:12.8f}  E(imp)={e_imp:12.8f}  <S^2>={ss:8.6f}"
+            )
+            RDM1s.append(rdm1)
+            e_cells.append(e_imp)
+            ss_list.append(ss)
+
+        w = np.asarray(self.settings.state_percent)
+        RDM1 = lib.einsum("i,ijk->jk", w, RDM1s)
+        e_cell = lib.einsum("i,i->", w, e_cells)
+        self.SS = np.mean(ss_list)
+        return e_cell, RDM1
+
+    def _run_nevpt2(self, cas_norb, cas_nelec, e_tot, solver_name):
+        mc_ci = mcscf.CASCI(self.mf, cas_norb, cas_nelec)
+
+        if solver_name == "FCI" and self.settings.e_shift is not None:
+            target_SS = 0.5 * self.settings.twoS * (0.5 * self.settings.twoS + 1)
+            mc_ci.fix_spin_(shift=self.settings.e_shift, ss=target_SS)
+
+        # reuse the same CI solver (Check if is compatible - this might require refactor)
+        mc_ci.fcisolver = self.mc.fcisolver
+        mc_ci.fcisolver.nroots = self.settings.nevpt2_nroots
+        fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
+
+        e_casci_nevpt2 = []
+        for root in self.settings.nevpt2_roots:
+            ci = fcivec[root]
+            ss = mc_ci.fcisolver.spin_square(ci, cas_norb, mc_ci.nelecas)[0]
+            e_corr = mrpt.NEVPT(mc_ci, root).kernel()
+            e_cas_root = (
+                mc_ci.e_tot
+                if not isinstance(mc_ci.e_tot, np.ndarray)
+                else mc_ci.e_tot[root]
+            )
+            e_casci_nevpt2.append([ss, e_cas_root, e_cas_root + e_corr])
+        # Pack E_CASSCF and E_NEVPT2 into a tuple of e_tot
+        e_casci_nevpt2 = np.asarray(e_casci_nevpt2)
+        e_tot = (e_tot, e_casci_nevpt2)
+
+        return e_tot

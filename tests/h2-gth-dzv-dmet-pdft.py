@@ -6,7 +6,6 @@ from pyscf.pbc import gto, scf, df
 
 from pdmet import dmet
 from pdmet.tools import tchkfile
-from pyscf.mcpdft.mcpdft import mcpdft
 
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
@@ -15,13 +14,10 @@ cell = gto.Cell()
 cell.atom = """H 5 5 4; H 5 5 5"""
 cell.basis = "gth-dzv"
 cell.spin = 0
-#
-# Note the extra attribute ".a" in the "cell" initialization.
-# .a is a matrix for lattice vectors.  Each row of .a is a primitive vector.
-#
 cell.verbose = 2
 cell.max_memory = 10000
 cell.a = np.eye(3) * 10
+cell.verbose = 5
 cell.build()
 
 """================================"""
@@ -39,7 +35,7 @@ if not os.path.exists("gdf.h5"):
 """================================"""
 kmesh = [1, 1, 1]
 kpts = cell.make_kpts(kmesh)
-khf = scf.KROHF(cell, kpts).density_fit()
+khf = scf.KRHF(cell, kpts).density_fit()
 khf.with_df._cderi = "gdf.h5"
 khf.exxdiv = None
 khf.run()
@@ -62,71 +58,22 @@ guiding_centres = .true.
 """
 w90 = pywannier90.W90(kmf, cell, kmesh, num_wann, other_keywords=keywords)
 w90.kernel()
-w90.plot_wf(outfile="./WFs/MLWF")
-tchkfile.save_w90(w90, "chk_w90")
-# print("kmf mo coeff",kmf.mo_coeff)
 
-"""================================"""
-""" Run MC-PDFT """
-"""================================"""
-
-"""================================"""
-""" Gamma-point MC-PDFT  """
-"""================================"""
-hf = scf.ROHF(cell).density_fit()
-hf.with_df._cderi = "gdf.h5"
-hf.exxdiv = None
-hf.verbose = 1
-hf_2 = hf
-hf.run()
-hf.mol
-print("hf mo coeff", hf.mo_coeff)
-
-######################## print("randommc.mo_coeff",randommc.mo_coeff)
-mc = mcpdft.CASSCF(hf, "tPBE", 2, 2, grids_level=6)
-mc = mc.fix_spin_(shift=0.5, ss=0)
-print("mcpdft mo coeff is --------------------------------------", mc.mo_coeff)
-############################## mc.fcisolver = csf_solver (cell, smult = 1)
-mc.verbose = 3
-Vnn = mc._scf.energy_nuc()
-mc_dup = mc
-mc.kernel()
-dm1s = np.asarray(mc.make_rdm1s())
-print("dm1s", dm1s)
-# tplot.plot_mo_gamma(mc, 'nat')
-# molden.from_scf(mc, 'nat.molden')
-# mc.get_energy_decomposition()
-# mc._scf=hf
-# print("mc.mo_occ",mc.mo_occ)
-# print("mc.mo_energy",mc.mo_energy)
-################################# print ("MC-PDFT module over------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
-
-
+kmf = tchkfile.load_kmf(cell, khf, kmesh, "chk_HF")
 """================================"""
 """ Run DMET """
 """================================"""
 pdmet = dmet.pDMET(
     cell, kmf, w90, solver="CASPDFT"
 )  # pass an hf object (scf.ROHF(cell).density_fit()), not a khf object i.e. scf.KROHF(cell, kpts).density_fit(). scf.KROHF(cell, kpts).density_fit() prints an output type not compatible with slicing.
-pdmet.impCluster = [1]
-pdmet._impOrbs_threshold = 1.5
-# pdmet.bath_truncation = False
-pdmet.kmf_chkfile = "chk_HF"
-pdmet.w90_chkfile = "chk_w90"
-pdmet.twoS = 0
-pdmet.cas = (2, 2)
-# pdmet.molist = [0,1]
-###pdmet.state_average_ = [0.25]*2
-pdmet.e_shift = 0.5
-###pdmet.nevpt2_roots = np.arange(4)
-###pdmet.nevpt2_nroots = 4
+pdmet.emb.impCluster = [1]
+pdmet.emb.impOrbs_threshold = 1.5
+pdmet.solver.twoS = 0
+pdmet.solver.cas = (2, 2)
+pdmet.solver.e_shift = 0.5
 pdmet.initialize()
 pdmet.one_shot()
-print("Vnn; In DMET-PDFT VNN is 0 since we use a fake molecule")
-print("Add this Vnn to the dmet C-pDFT energy ", Vnn)
-print("Occupancy:", pdmet.qcsolver.mc.mo_occ)
-pdmet.plot("nat", path="./nat")
-# hello hello`
+
 """
 
 '''================================'''

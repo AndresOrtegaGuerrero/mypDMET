@@ -69,19 +69,6 @@ class QCsolvers:
         self.mol.max_memory = memory
         self.mol.spin = self.twoS
 
-        # self.cell = cellgto.Cell()
-        # self.cell.atom = '''H 5 5 4; H 5 5 5'''
-        # self.cell.basis = 'gth-dzv'
-        # self.cell.spin = 0
-        #
-        # Note the extra attribute ".a" in the "cell" initialization.
-        # .a is a matrix for lattice vectors.  Each row of .a is a primitive vector.
-        #
-        # self.cell.verbose = 2
-        # self.cell.max_memory=10000
-        # self.cell.a = np.eye(3)*10
-        # self.cell.build()
-
         self.xc_omega = None
         if self.mol.spin == 0 and not self._is_KROHF:
             self.mf = scf.RHF(self.mol)

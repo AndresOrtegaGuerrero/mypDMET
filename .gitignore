@@ -25,3 +25,9 @@ dist/
 *.egg
 MANIFEST
 pdmet/lib/build/
+
+
+# Custom ignores incase tests are run
+*.win
+*.h5
+UNK*

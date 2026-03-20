@@ -22,18 +22,18 @@ from . import (  # noqa: E402
     localbasis,
     schmidtbasis,
     dmet,
-    qcsolvers,
     helper,
     tools,
     lib,
+    settings,
 )
 
 __all__ = [
     "localbasis",
     "schmidtbasis",
     "dmet",
-    "qcsolvers",
     "helper",
     "tools",
     "lib",
+    "settings",
 ]
