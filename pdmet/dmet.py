@@ -615,34 +615,7 @@ class pDMET:
                 "   No. of electrons per cell : %12.8f" % (self.nelec_per_cell)
             )
 
-        if isinstance(self.e_tot, list) or isinstance(self.e_tot, np.ndarray):
-            tprint.print_msg("   Energy per cell           : %12.8f" % (self.e_tot[0]))
-            if self.solver.state_average_ is not None:
-                for i, e in enumerate(self.e_tot):
-                    tprint.print_msg(
-                        "      State %d weight %7.5f: E = %12.8f"
-                        % (i, self.solver.state_average_[i], e)
-                    )
-            else:
-                for i, e in enumerate(self.e_tot):
-                    tprint.print_msg("      State %d: E = %12.8f" % (i, e))
-        else:
-            tprint.print_msg("   Energy per cell           : %12.8f" % (self.e_tot))
-
-        if self.solver.nevpt2_roots is not None:
-            tprint.print_msg("   NEVPT2 energies for the selected states:")
-            for i, e_nevpt2 in enumerate(self.e_nept2_tot):
-                tprint.print_msg(
-                    "      State %d: E(CASCI) = %12.8f   E(NEVPT2) = %12.8f   <S^2> = %8.6f"
-                    % (
-                        self.solver.nevpt2_roots[i],
-                        self.e_casci_tot[i],
-                        e_nevpt2,
-                        self.ss_CASCI[i],
-                    )
-                )
-
-        tprint.print_msg("-- One-shot DMET ... finished at %s" % (tunix.current_time()))
+        self._print_energies()
 
     def _print_solver_header(self):
         """Solver header"""
@@ -743,6 +716,8 @@ class pDMET:
                         self.ss_CASCI[i],
                     )
                 )
+
+        tprint.print_msg("-- One-shot DMET ... finished at %s" % (tunix.current_time()))
 
     def self_consistent(self, get_band=False, interpolate_band=None):
         """

@@ -64,7 +64,10 @@ kmf = tchkfile.load_kmf(cell, khf, kmesh, "chk_HF")
 """ Run DMET """
 """================================"""
 pdmet = dmet.pDMET(
-    cell, kmf, w90, solver="CASPDFT"
+    cell,
+    kmf,
+    w90,
+    solver="CASCI",
 )  # pass an hf object (scf.ROHF(cell).density_fit()), not a khf object i.e. scf.KROHF(cell, kpts).density_fit(). scf.KROHF(cell, kpts).density_fit() prints an output type not compatible with slicing.
 pdmet.emb.impCluster = [1]
 pdmet.emb.impOrbs_threshold = 1.5
