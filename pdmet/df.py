@@ -130,6 +130,72 @@ def get_emb_eri_gdf(
     return eri
 
 
+def get_emb_Lmn(
+    cell,
+    mydf,
+    ao2eo,
+    feri=None,
+    kscaled_center=None,
+    max_memory=2000,
+    kconserv_tol=1e-12,
+):
+    nao = cell.nao_nr()
+    kpts = mydf.kpts
+    nkpts = len(kpts)
+
+    if mydf._cderi is None and feri is not None:
+        mydf._cderi = feri
+
+    ao2eo = ao2eo[np.newaxis, ...]
+
+    kscaled = cell.get_scaled_kpts(kpts)
+    if kscaled_center is not None:
+        kscaled -= kscaled_center
+
+    B_blocks = []
+
+    for kL in range(nkpts):
+        for i, kpti in enumerate(kpts):
+            for j, kptj in enumerate(kpts):
+                kconserv = -kscaled[i] + kscaled[j] + kscaled[kL]
+
+                if la.norm(np.round(kconserv) - kconserv) >= kconserv_tol:
+                    continue
+
+                # collect this (i,j,kL) block
+                Lij_emb_pq = []
+
+                for LpqR, LpqI, sign in mydf.sr_loop(
+                    [kpti, kptj],
+                    max_memory=max_memory,
+                    compact=False,
+                ):
+                    Lpq = (LpqR + 1j * LpqI) * sign
+                    Lpq = Lpq.reshape(-1, nao, nao)
+                    Lmn = _Lij_to_Lmn(Lpq, ao2eo, i, j)
+                    # keep ALL auxiliary indices
+                    Lij_emb_pq.append(Lmn[0])  # (nL, nemb, nemb)
+
+                if len(Lij_emb_pq) == 0:
+                    continue
+                # stack properly (same as TEI builder)
+                Lij_emb_pq = np.vstack(Lij_emb_pq)
+                B_blocks.append(Lij_emb_pq)
+    # final stacking
+    B_complex = np.vstack(B_blocks)
+    # normalization (same as TEI)
+    B_complex /= np.sqrt(nkpts)
+
+    imag_norm = np.max(np.abs(B_complex.imag))
+    assert imag_norm < 1e-6, f"Imag part too large: {imag_norm}"
+
+    B = B_complex.real
+    # enforce symmetry
+    B = 0.5 * (B + B.transpose(0, 2, 1))
+
+    return B
+
+
 """TODO: there is lots of things to do here to implement the FFTDF """
 
 

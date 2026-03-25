@@ -1,5 +1,6 @@
 from pdmet.qcsolvers.base import BaseSolver
 from pyscf import lib
+import numpy as np
 
 
 class BaseCASSolver(BaseSolver):
@@ -62,16 +63,15 @@ class BaseCASSolver(BaseSolver):
         mc.mo_coeff = self.mf.mo_coeff
         mc.mo_energy = self.mf.mo_energy
 
-    def _cas_rdm1_to_local(self, ci, mc, cas_norb):
+    def _cas_rdm1_to_local_from_dm(self, casdm1_mo, mc, cas_norb):
         """
-        Build full-space RDM1 in local basis from CAS density matrix.
+        Transform CAS RDM1 (MO basis) → local AO basis
         """
         core_norb = mc.ncore
         mo = mc.mo_coeff
 
         core_MO = mo[:, :core_norb]
         active_MO = mo[:, core_norb : core_norb + cas_norb]
-        casdm1_mo = mc.fcisolver.make_rdm1(ci, cas_norb, mc.nelecas)
         # core contribution
         coredm1 = core_MO @ core_MO.T * 2
         # active contribution
@@ -81,15 +81,46 @@ class BaseCASSolver(BaseSolver):
 
         return coredm1 + casdm1
 
-    def _impurity_energy_from_cas(self, ci, mc, cas_norb, RDM1):
+    def _print_ci_analysis(
+        self, ci, cas_norb, neleca, nelecb, root, tol=0.1, max_det=4
+    ):
+        from pyscf.fci import addons, direct_spin1
+
+        # RDM1 , occupations
+        rdm1 = direct_spin1.make_rdm1(ci, cas_norb, (neleca, nelecb))
+        occ = np.linalg.eigvalsh(rdm1)[::-1]
+
+        # determinants in string representation
+        dominant = addons.large_ci(
+            ci, cas_norb, (neleca, nelecb), tol=tol, return_strs=True
+        )
+
+        def _fmt_det(s, cas_norb):
+            """Convert '0b11' → '0011' padded to cas_norb digits."""
+            return format(int(s, 2), f"0{cas_norb}b")
+
+        # Sort and only take the most important determinants for display
+        dominant = sorted(dominant, key=lambda x: -abs(x[0]))[:max_det]
+
+        det_str = " + ".join(
+            f"{coeff:+.4f}|{_fmt_det(stra, cas_norb)},{_fmt_det(strb, cas_norb)}>"
+            for coeff, stra, strb in dominant
+        )
+
+        print(f"  State {root}: {det_str}")
+        print(f"    Occupancies: {np.round(occ, 4).tolist()}")
+
+    def _impurity_energy_from_cas_naive(self, mc, cas_norb, RDM1, casdm2):
         Nimp = self.Nimp
         ncore = mc.ncore
         mo = mc.mo_coeff
         core_MO = mo[:, :ncore]
         active_MO = mo[:, ncore : ncore + cas_norb]
 
+        TEI = (
+            self.build_full_tei()
+        )  # For testing porpuses use since allocates the full TEI
         # only CAS 2-RDM needed
-        casdm2 = mc.fcisolver.make_rdm2(ci, cas_norb, mc.nelecas)
         casdm2_loc = lib.einsum(
             "ip,jq,kr,ls,pqrs->ijkl",
             active_MO,
@@ -111,25 +142,25 @@ class BaseCASSolver(BaseSolver):
             lib.einsum(
                 "ijkl,ijkl->",
                 casdm2_loc[:Nimp, :, :, :],
-                self.TEI[:Nimp, :, :, :],
+                TEI[:Nimp, :, :, :],
                 optimize=True,
             )
             + lib.einsum(
                 "ijkl,ijkl->",
                 casdm2_loc[:, :Nimp, :, :],
-                self.TEI[:, :Nimp, :, :],
+                TEI[:, :Nimp, :, :],
                 optimize=True,
             )
             + lib.einsum(
                 "ijkl,ijkl->",
                 casdm2_loc[:, :, :Nimp, :],
-                self.TEI[:, :, :Nimp, :],
+                TEI[:, :, :Nimp, :],
                 optimize=True,
             )
             + lib.einsum(
                 "ijkl,ijkl->",
                 casdm2_loc[:, :, :, :Nimp],
-                self.TEI[:, :, :, :Nimp],
+                TEI[:, :, :, :Nimp],
                 optimize=True,
             )
         )
@@ -143,58 +174,55 @@ class BaseCASSolver(BaseSolver):
 
             effdm2 = 2 * lib.einsum(
                 "pq,rs->pqrs", casdm1_loc, coredm1, optimize=True
-            ) - lib.einsum("ps,rq->pqrs", casdm1_loc, coredm1)
+            ) - lib.einsum("ps,rq->pqrs", casdm1_loc, coredm1, optimize=True)
             dm2_corr = coredm2 + effdm2
 
             two_body += 0.125 * (
                 lib.einsum(
                     "ijkl,ijkl->",
                     dm2_corr[:Nimp, :, :, :],
-                    self.TEI[:Nimp, :, :, :],
+                    TEI[:Nimp, :, :, :],
                     optimize=True,
                 )
                 + lib.einsum(
                     "ijkl,ijkl->",
                     dm2_corr[:, :Nimp, :, :],
-                    self.TEI[:, :Nimp, :, :],
+                    TEI[:, :Nimp, :, :],
                     optimize=True,
                 )
                 + lib.einsum(
                     "ijkl,ijkl->",
                     dm2_corr[:, :, :Nimp, :],
-                    self.TEI[:, :, :Nimp, :],
+                    TEI[:, :, :Nimp, :],
                     optimize=True,
                 )
                 + lib.einsum(
                     "ijkl,ijkl->",
                     dm2_corr[:, :, :, :Nimp],
-                    self.TEI[:, :, :, :Nimp],
+                    TEI[:, :, :, :Nimp],
                     optimize=True,
                 )
             )
 
         return one_body + two_body
 
-    def _impurity_energy_from_cas_test(self, ci, mc, cas_norb, RDM1):
+    def _impurity_energy_from_cas_df(self, mc, cas_norb, RDM1, casdm2):
         """
-        Impurity energy for CAS solvers.
+        Fully DF-based impurity energy.
+        No TEI, no dm2_corr, no O(N^4) memory.
 
-        Efficiency: avoids building full (Norb^4) RDM2 in local basis.
-        Instead, each permutation transforms only one index to Nimp,
-        reducing cost from O(Norb^4 * Ncas^4) to O(Nimp * Norb^3 * Ncas).
-
-        Valid for both Gamma-point and k-point DMET.
+        B: (naux, nemb, nemb)
         """
+
         Nimp = self.Nimp
         ncore = mc.ncore
         mo = mc.mo_coeff
 
-        core_MO = mo[:, :ncore]
-        active_MO = mo[:, ncore : ncore + cas_norb]
+        # MO spaces
+        active_MO = mo[:, ncore : ncore + cas_norb]  # (nemb, ncas)
+        imp_MO = active_MO[:Nimp, :]  # (Nimp, ncas)
 
-        casdm2 = mc.fcisolver.make_rdm2(ci, cas_norb, mc.nelecas)
-
-        # --- One-body ---
+        # One-body
         one_body = 0.5 * lib.einsum(
             "ij,ij->",
             RDM1[:Nimp, :],
@@ -202,93 +230,83 @@ class BaseCASSolver(BaseSolver):
             optimize=True,
         )
 
-        # --- Two-body: partial transformation per permutation ---
-        # For each permutation we only transform the impurity-projected index
-        # This avoids ever allocating the full (Norb,Norb,Norb,Norb) array
-
-        def _contract_imp_idx(imp_mo, full_mo, dm2, TEI_slice):
-            """
-            Transform dm2 with imp_mo on one index and full_mo on the rest,
-            then contract with TEI_slice.
-
-            imp_mo  : active_MO[:Nimp, :]  — (Nimp, Ncas)
-            full_mo : active_MO            — (Norb, Ncas)
-            Scaling : O(Nimp * Norb^3 * Ncas) vs O(Norb^4 * Ncas^4)
-            """
-            # Step through indices sequentially — numpy can optimize each step
-            tmp = lib.einsum(
-                "ip,pqrs->iqrs", imp_mo, dm2, optimize=True
-            )  # (Nimp, Ncas, Ncas, Ncas)
-            tmp = lib.einsum(
-                "jq,iqrs->ijrs", full_mo, tmp, optimize=True
-            )  # (Nimp, Norb, Ncas, Ncas)
-            tmp = lib.einsum(
-                "kr,ijrs->ijks", full_mo, tmp, optimize=True
-            )  # (Nimp, Norb, Norb, Ncas)
-            tmp = lib.einsum(
-                "ls,ijks->ijkl", full_mo, tmp, optimize=True
-            )  # (Nimp, Norb, Norb, Norb)
-            return lib.einsum("ijkl,ijkl->", tmp, TEI_slice, optimize=True)
-
-        imp_MO = active_MO[:Nimp, :]  # only impurity rows
-
-        # Permutation 1: first index impurity  [:Nimp,:,:,:]
-        t2 = _contract_imp_idx(imp_MO, active_MO, casdm2, self.TEI[:Nimp, :, :, :])
-        # Permutation 2: second index impurity  [:,:Nimp,:,:]
-        # casdm2[p,q,r,s] = casdm2[q,p,s,r] by symmetry → reuse _contract_imp_idx
-        t2 += _contract_imp_idx(
-            imp_MO, active_MO, casdm2.transpose(1, 0, 3, 2), self.TEI[:, :Nimp, :, :]
+        # DF tensors in CAS basis
+        B_cas = lib.einsum(
+            "ip,Lij,jq->Lpq",
+            active_MO,
+            self.B,
+            active_MO,
+            optimize=True,
         )
-        # Permutation 3: third index impurity  [:,:,:Nimp,:]
-        t2 += _contract_imp_idx(
-            imp_MO, active_MO, casdm2.transpose(2, 3, 0, 1), self.TEI[:, :, :Nimp, :]
+
+        B_imp = lib.einsum(
+            "ip,Lij,jq->Lpq",
+            imp_MO,
+            self.B[:, :Nimp, :],
+            active_MO,
+            optimize=True,
         )
-        # Permutation 4: fourth index impurity  [:,:,:,:Nimp]
-        t2 += _contract_imp_idx(
-            imp_MO, active_MO, casdm2.transpose(3, 2, 1, 0), self.TEI[:, :, :, :Nimp]
-        )
+
+        # CAS 2-body contribution
+        def _perm(dm2, imp_left: bool):
+            if imp_left:
+                D = lib.einsum("pqrs,Lpq->Lrs", dm2, B_imp, optimize=True)
+                return lib.einsum("Lrs,Lrs->", D, B_cas, optimize=True)
+            else:
+                D = lib.einsum("pqrs,Lrs->Lpq", dm2, B_imp, optimize=True)
+                return lib.einsum("Lpq,Lpq->", D, B_cas, optimize=True)
+
+        t2 = _perm(casdm2, True)
+        t2 += _perm(casdm2.transpose(1, 0, 3, 2), True)
+        t2 += _perm(casdm2.transpose(2, 3, 0, 1), False)
+        t2 += _perm(casdm2.transpose(3, 2, 1, 0), False)
 
         two_body = 0.125 * t2
 
-        # --- Core + core-active correction ---
+        # Core + core-active correction
         if ncore > 0:
-            coredm1 = core_MO @ core_MO.T * 2
-            casdm1_loc = RDM1 - coredm1
+            core_MO = mo[:, :ncore]
 
-            coredm2 = lib.einsum(
-                "pq,rs->pqrs", coredm1, coredm1, optimize=True
-            ) - 0.5 * lib.einsum("ps,rq->pqrs", coredm1, coredm1, optimize=True)
-            effdm2 = 2 * lib.einsum(
-                "pq,rs->pqrs", casdm1_loc, coredm1, optimize=True
-            ) - lib.einsum("ps,rq->pqrs", casdm1_loc, coredm1, optimize=True)
-            dm2_corr = coredm2 + effdm2
+            Dc = core_MO @ core_MO.T * 2  # core density
+            Da = RDM1 - Dc  # active density in AO basis
 
-            # Core correction: already in local basis — slice directly
-            two_body += 0.125 * (
-                lib.einsum(
-                    "ijkl,ijkl->",
-                    dm2_corr[:Nimp, :, :, :],
-                    self.TEI[:Nimp, :, :, :],
-                    optimize=True,
-                )
-                + lib.einsum(
-                    "ijkl,ijkl->",
-                    dm2_corr[:, :Nimp, :, :],
-                    self.TEI[:, :Nimp, :, :],
-                    optimize=True,
-                )
-                + lib.einsum(
-                    "ijkl,ijkl->",
-                    dm2_corr[:, :, :Nimp, :],
-                    self.TEI[:, :, :Nimp, :],
-                    optimize=True,
-                )
-                + lib.einsum(
-                    "ijkl,ijkl->",
-                    dm2_corr[:, :, :, :Nimp],
-                    self.TEI[:, :, :, :Nimp],
-                    optimize=True,
-                )
+            # Transform densities to CAS basis
+            Dc_cas = lib.einsum(
+                "pi,pq,qj->ij",
+                active_MO,
+                Dc,
+                active_MO,
+                optimize=True,
             )
+
+            Da_cas = lib.einsum(
+                "pi,pq,qj->ij",
+                active_MO,
+                Da,
+                active_MO,
+                optimize=True,
+            )
+
+            # Coulomb
+            rho_imp = lib.einsum("Lpq,pq->L", B_imp, Dc_cas, optimize=True)
+            rho_cas = lib.einsum("Lrs,rs->L", B_cas, Dc_cas, optimize=True)
+            E_coul = np.dot(rho_imp, rho_cas)
+
+            # Exchange (Dc exchange)
+            X_imp = lib.einsum("Lps,ps->L", B_imp, Dc_cas, optimize=True)
+            X_cas = lib.einsum("Lrq,rq->L", B_cas, Dc_cas, optimize=True)
+            E_exch = -0.5 * np.dot(X_imp, X_cas)
+
+            #  Mixed Coulomb
+            rho_imp_m = lib.einsum("Lpq,pq->L", B_imp, Da_cas, optimize=True)
+            rho_cas_m = lib.einsum("Lrs,rs->L", B_cas, Dc_cas, optimize=True)
+            E_mix = 2.0 * np.dot(rho_imp_m, rho_cas_m)
+
+            # Mixed exchange
+            X_imp_m = lib.einsum("Lps,ps->L", B_imp, Da_cas, optimize=True)
+            X_cas_m = lib.einsum("Lrq,rq->L", B_cas, Dc_cas, optimize=True)
+            E_mix -= np.dot(X_imp_m, X_cas_m)
+
+            two_body += 0.125 * (E_coul + E_exch + E_mix)
 
         return one_body + two_body

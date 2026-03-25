@@ -49,8 +49,8 @@ class DIIS:
         self._max_idx = None
 
         # These are not variables:
-        out = open("diis.temp", "w")
-        out.write("DIIS: %s\n" % (tunix.current_time()))
+        with open("diis.temp", "a") as out:
+            out.write("DIIS: %s\n" % (tunix.current_time()))
 
     def get_errors(self, residual_mat):
         """Get errors list and their norms"""
@@ -107,26 +107,26 @@ class DIIS:
 
             # Print:
             nvector = len(self._residual_mat)
-            out = open("diis.temp", "a")
-            out.write("Cycle " + str(cycle + 1) + ":\n")
-            if cycle < self.start_at + self.nvector - 1:
-                out.write("  #          Error\n")
-                out.write("  --------------------\n")
-                for i in range(nvector):
-                    out.write(" %2d       %15.12f\n" % (i, self._norm_errors[i]))
+            with open("diis.temp", "a") as out:
+                out.write("Cycle " + str(cycle + 1) + ":\n")
+                if cycle < self.start_at + self.nvector - 1:
+                    out.write("  #          Error\n")
+                    out.write("  --------------------\n")
+                    for i in range(nvector):
+                        out.write(" %2d       %15.12f\n" % (i, self._norm_errors[i]))
 
         # Return new boject matrix
         if cycle >= self.start_at + self.nvector - 1:
             new_obj_mat = self.extrapolate()
-
-            # Print
-            out.write("  #          Error                  c\n")
-            out.write("  --------------------------------------\n")
-            for i in range(nvector):
-                out.write(
-                    " %2d       %15.12f          %8.5f\n"
-                    % (i, self._norm_errors[i], self._c[i])
-                )
+            with open("diis.temp", "a") as out:
+                # Print
+                out.write("  #          Error                  c\n")
+                out.write("  --------------------------------------\n")
+                for i in range(nvector):
+                    out.write(
+                        " %2d       %15.12f          %8.5f\n"
+                        % (i, self._norm_errors[i], self._c[i])
+                    )
         else:
             new_obj_mat = obj_mat
 

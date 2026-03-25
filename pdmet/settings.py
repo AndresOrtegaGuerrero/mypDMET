@@ -29,6 +29,7 @@ from enum import Enum
 class SCFMethod(str, Enum):
     """Scipy optimization method for SCF convergence"""
 
+    LBFGS_B = "L-BFGS-B"
     BFGS = "BFGS"
     CG = "CG"
     NEWTON_CG = "Newton-CG"

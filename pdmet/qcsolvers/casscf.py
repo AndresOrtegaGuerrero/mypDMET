@@ -77,9 +77,10 @@ class CASSCFSolver(BaseCASSolver):
 
     def _single_root_casscf(self, fcivec, cas_norb, e_tot):
         self.SS = self.mc.fcisolver.spin_square(fcivec, cas_norb, self.mc.nelecas)[0]
-        RDM1 = self._cas_rdm1_to_local(fcivec, self.mc, cas_norb)
-        e_cell = self.kmf_ecore + self._impurity_energy_from_cas(
-            fcivec, self.mc, cas_norb, RDM1
+        casdm1_mo = self.mc.fcisolver.make_rdm1(fcivec, cas_norb, self.mc.nelecas)
+        RDM1 = self._cas_rdm1_to_local_from_dm(casdm1_mo, self.mc, cas_norb)
+        e_cell = self.kmf_ecore + self._impurity_energy_from_cas_df(
+            self.mc, cas_norb, RDM1
         )
         state_id = self.settings.state_specific_ or 0
         print(
@@ -90,16 +91,18 @@ class CASSCFSolver(BaseCASSolver):
     def _state_average(self, fcivec, cas_norb, e_tot, weights):
         RDM1s, e_cells = [], []
         ss = self.mc.fcisolver.states_spin_square(fcivec, cas_norb, self.mc.nelecas)[0]
+        rdm1s_cas, rdm2s_cas = self.mc.fcisolver.states_make_rdm12(
+            fcivec, cas_norb, self.mc.nelecas
+        )
         for i, civec in enumerate(fcivec):
-            # Fast Implementation
-            rdm1 = self._cas_rdm1_to_local(civec, self.mc, cas_norb)
-            e_imp = self.kmf_ecore + self._impurity_energy_from_cas(
-                civec, self.mc, cas_norb, rdm1
+            rdm1 = self._cas_rdm1_to_local_from_dm(rdm1s_cas[i], self.mc, cas_norb)
+            e_imp = self.kmf_ecore + self._impurity_energy_from_cas_df(
+                self.mc, cas_norb, rdm1, rdm2s_cas[i]
             )
 
             print(
                 f"  State {i} ({weights[i]:.3f}): E(CASSCF)={e_tot[i]:12.8f}  "
-                f"E(imp)={e_imp:12.8f}  <S^2>={ss:8.6f}"
+                f"E(imp)={e_imp:12.8f}  <S^2>={ss[i]:8.6f}"
             )
             RDM1s.append(rdm1)
             e_cells.append(e_imp)
@@ -144,27 +147,3 @@ class CASSCFSolver(BaseCASSolver):
         )
         orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
         return orbcas @ t_dm1 @ orbcas.T
-
-    def _print_ci_analysis(
-        self, ci, cas_norb, neleca, nelecb, root, tol=0.1, max_det=4
-    ):
-        from pyscf.fci import addons, direct_spin1
-
-        # RDM1 , occupations
-        rdm1 = direct_spin1.make_rdm1(ci, cas_norb, (neleca, nelecb))
-        occ = np.linalg.eigvalsh(rdm1)[::-1]
-
-        # determinants in string representation
-        dominant = addons.large_ci(
-            ci, cas_norb, (neleca, nelecb), tol=tol, return_strs=True
-        )
-
-        # Sort and only take the most important determinants for display
-        dominant = sorted(dominant, key=lambda x: -abs(x[0]))[:max_det]
-
-        det_str = " + ".join(
-            f"{coeff:+.4f}|{stra},{strb}>" for coeff, stra, strb in dominant
-        )
-
-        print(f"  State {root}: {det_str}")
-        print(f"    Occupancies: {np.round(occ, 4).tolist()}")

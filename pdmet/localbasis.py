@@ -308,6 +308,31 @@ class Local:
         TEI = df.get_emb_eri_gdf(self.cell, mydf, ao2eo)[0]
         return TEI
 
+    def get_emb_coreJK_df(self, emb_JK, B, emb_1RDM):
+        """
+        DF version: no 4-index TEI needed
+        B: (naux, nemb, nemb)
+        """
+        # Coulomb
+        X = lib.einsum("Lrs,rs->L", B, emb_1RDM, optimize=True)
+        J = lib.einsum("Lpq,L->pq", B, X, optimize=True)
+        # Exchange
+        K = lib.einsum("Lpr,Lqs,rs->pq", B, B, emb_1RDM, optimize=True)
+
+        emb_actJK = J - 0.5 * K
+        emb_coreJK = emb_JK - emb_actJK
+
+        return emb_coreJK
+
+    def get_emb_B(self, ao2eo):
+        """
+        Get 3-index DF tensor in embedding basis.
+        Shape: (naux, nemb, nemb)
+        For use in _impurity_energy_from_cas_df to avoid O(nemb^4) memory.
+        """
+        mydf = self.kmf.with_df
+        return df.get_emb_Lmn(self.cell, mydf, ao2eo)
+
     def get_TEI(self, ao2eo):
         """Get embedding TEI without density fitting"""
         kconserv = pbctools.get_kconserv(self.cell, self.kpts)

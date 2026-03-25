@@ -16,7 +16,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-Email: Hung Q. Pham <pqh3.14@gmail.com>
 """
 
 import numpy as np
@@ -350,8 +349,14 @@ class pDMET:
         if self._is_new_bath:
             ao2eo = self.local.get_ao2eo(self.emb_orbs)
             self.emb_OEI = self.local.get_emb_OEI(ao2eo)
+            # Original way of getting TEI, but allocates the full TEI in memory
+            # self.emb_TEI = (
+            #     self.local.get_emb_TEI(ao2eo)
+            #     if self.emb.use_GDF
+            #     else self.local.get_TEI(ao2eo)
+            # )
             self.emb_TEI = (
-                self.local.get_emb_TEI(ao2eo)
+                self.local.get_emb_B(ao2eo)
                 if self.emb.use_GDF
                 else self.local.get_TEI(ao2eo)
             )
@@ -359,10 +364,12 @@ class pDMET:
                 self.loc_1RDM_kpts, self.emb_orbs
             )
             self.emb_JK = self.local.get_emb_JK(self.loc_1RDM_kpts, ao2eo)
-            self.emb_coreJK = self.local.get_emb_coreJK(
+            # self.emb_coreJK = self.local.get_emb_coreJK(
+            #     self.emb_JK, self.emb_TEI, self.emb_mf_1RDM
+            # )
+            self.emb_coreJK = self.local.get_emb_coreJK_df(
                 self.emb_JK, self.emb_TEI, self.emb_mf_1RDM
             )
-            self.emb_FOCK = self.emb_OEI + self.emb_coreJK
             self.ao2eo = ao2eo
 
         # Emb 1-RDM guess
@@ -372,8 +379,9 @@ class pDMET:
         if self._is_gamma:
             emb_guess_1RDM = self.emb_mf_1RDM
         else:
+            emb_FOCK = self.emb_OEI + self.emb_coreJK
             emb_guess_1RDM = self.local.get_emb_guess_1RDM(
-                self.emb_FOCK, self.Nelec_in_emb, self.Nimp, chempot
+                emb_FOCK, self.Nelec_in_emb, self.Nimp, chempot
             )
         if self._cycle == 1:
             tprint.print_msg(
@@ -452,12 +460,10 @@ class pDMET:
         # Unpack e_solver
         if "CASPDFT" in self.solver.name:
             e_cas, e_pdft = e_solver
-            self.e_tot = float(e_pdft) + self.core_energy + self.local.e_core
-            self.e_cas = float(e_cas) + self.core_energy + self.local.e_core
-            self.e_emb = float(e_pdft)
+            self.e_tot = np.asarray(e_pdft) + self.core_energy + self.local.e_core
+            self.e_cas = np.asarray(e_cas) + self.core_energy + self.local.e_core
+            self.e_emb = np.asarray(e_pdft)
             self.e_imp = e_cell - self.local.e_core
-            tprint.print_msg("   E(CASSCF)        : %12.8f" % self.e_cas)
-            tprint.print_msg("   E(pDME-PDFT)     : %12.8f" % self.e_tot)
 
         elif self.solver.nevpt2_roots is not None:
             e_CAS, e_CASCI_NEVPT2, t_dm1s = e_solver
@@ -660,55 +666,57 @@ class pDMET:
         weights = getattr(self.solver, "state_average_", None)
         is_pdft = "CASPDFT" in name
 
+        tprint.print_msg("-" * 60)
+        tprint.print_msg("Results")
+        tprint.print_msg("-" * 60)
+
         if is_pdft:
             # Always report both CASSCF and PDFT
             if isinstance(self.e_cas, (list, np.ndarray)):
-                # SA-CASPDFT: per-state CASSCF energies
+                # SA-CASSCF: per-state CASSCF energies
                 for i, e in enumerate(self.e_cas):
                     w = self.solver.state_average_[i]
                     tprint.print_msg(
-                        "      State %d (w=%5.3f): E(CASSCF) = %12.8f" % (i, w, e)
+                        "      State %d (w=%5.3f): E(pDMET CASSCF) = %12.8f Eh"
+                        % (i, w, e)
+                    )
+                for i, e in enumerate(self.e_tot):
+                    w = self.solver.state_average_[i]
+                    tprint.print_msg(
+                        "      State %d (w=%5.3f): E(pDMET-PDFT) = %12.8f Eh"
+                        % (i, w, e)
                     )
             else:
-                tprint.print_msg("   E(CASSCF)    : %12.8f" % self.e_cas)
+                tprint.print_msg("   E(pDMET CASSCF)    : %12.8f Eh" % self.e_cas)
+                tprint.print_msg("   E(pDMET-PDFT) : %12.8f Eh" % self.e_tot)
 
-                if isinstance(self.e_tot, (list, np.ndarray)):
-                    # SA-CASPDFT: per-state PDFT energies
-                    for i, e in enumerate(self.e_tot):
-                        w = self.solver.state_average_[i]
-                        tprint.print_msg(
-                            "      State %d (w=%5.3f): E(pDME-PDFT) = %12.8f"
-                            % (i, w, e)
-                        )
-                    tprint.print_msg(
-                        "   E(pDME-PDFT) avg : %12.8f"
-                        % np.dot(self.solver.state_average_, self.e_tot)
-                    )
-                else:
-                    tprint.print_msg("   E(pDME-PDFT) : %12.8f" % self.e_tot)
-
-        elif isinstance(self.e_tot, (list, np.ndarray)):
+        if isinstance(self.e_tot, (list, np.ndarray)) and not is_pdft:
             # SA-CASSCF or multi-root
-            tprint.print_msg("   Energy per cell  : %12.8f" % self.e_tot[0])
+            tprint.print_msg("   Energy per cell  : %12.8f Eh" % self.e_tot[0])
             weights = self.solver.state_average_
             for i, e in enumerate(self.e_tot):
                 if weights is not None:
                     tprint.print_msg(
-                        "      State %d (w=%5.3f): E = %12.8f" % (i, weights[i], e)
+                        "      State %d (w=%5.3f): E(pDMET %s) = %12.8f Eh"
+                        % (i, weights[i], name, e)
                     )
                 else:
-                    tprint.print_msg("      State %d: E = %12.8f" % (i, e))
+                    tprint.print_msg(
+                        "      State %d: E(pDMET %s) = %12.8f Eh" % (i, name, e)
+                    )
 
         else:
             # Standard scalar energy
-            tprint.print_msg("   Energy per cell  : %12.8f" % self.e_tot)
+            tprint.print_msg(
+                "   Energy per cell E(pDMET %s) : %12.8f Eh" % (name, self.e_tot)
+            )
 
         # NEVPT2
         if self.solver.nevpt2_roots is not None:
             tprint.print_msg("   NEVPT2 energies for the selected states:")
             for i, e_nevpt2 in enumerate(self.e_nevpt2_tot):
                 tprint.print_msg(
-                    "      State %d: E(CASCI) = %12.8f   E(NEVPT2) = %12.8f   <S^2> = %8.6f"
+                    "      State %d: E(pDMET CASCI) = %12.8f Eh  E(pDMET NEVPT2) = %12.8f Eh   <S^2> = %8.6f"
                     % (
                         self.solver.nevpt2_roots[i],
                         self.e_casci_tot[i],
@@ -739,9 +747,7 @@ class pDMET:
                 % (self.scf.DIIS_start, self.scf.DIIS_nvector)
             )
 
-        # ------------------------------------#
-        # ---- SELF-CONSISTENT PROCEDURE ----#
-        # ------------------------------------#
+        # ---- SELF-CONSISTENT PROCEDURE ----
         OEH_kpts, rdm1_kpts, rdm1_R0 = self.local.make_loc_1RDM(
             self.umat,
             self.mask4Gamma,

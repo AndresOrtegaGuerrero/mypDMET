@@ -34,12 +34,21 @@ class BaseSolver:
             self.mf = scf.ROHF(self.mol)
 
     def initialize(
-        self, kmf_ecore, OEI, TEI, JK, DMguess, Norb, Nel, Nimp, chempot=0.0
+        self,
+        kmf_ecore,
+        OEI,
+        TEI,
+        JK,
+        DMguess,
+        Norb,
+        Nel,
+        Nimp,
+        chempot=0.0,
     ):
         """Load embedding integrals."""
         self.kmf_ecore = kmf_ecore
         self.OEI = OEI
-        self.TEI = TEI
+        self.B = TEI
         self.FOCK = OEI + JK
         self.DMguess = DMguess
         self.Norb = Norb
@@ -49,6 +58,9 @@ class BaseSolver:
         chempot_diag[:Nimp] = chempot
         self.chempot = np.diag(chempot_diag)
 
+    def build_full_tei(self):
+        return lib.einsum("Lij,Lkl->ijkl", self.B, self.B, optimize=True)
+
     def _setup_mf(self):
         """Inject embedding Hamiltonian and run SCF. Called at start of every kernel()."""
         from pyscf import ao2mo
@@ -57,7 +69,14 @@ class BaseSolver:
         self.mf.__init__(self.mol)
         self.mf.get_hcore = lambda *args: self.FOCK - self.chempot
         self.mf.get_ovlp = lambda *args: np.eye(self.Norb)
-        self.mf._eri = ao2mo.restore(8, self.TEI, self.Norb)
+        # Memory intensive step: reconstruct 4-index TEI from DF tensors and pack into 2D format for SCF
+        naux, nemb, _ = self.B.shape
+        B_packed = lib.pack_tril(self.B.reshape(naux, nemb, nemb))
+        eri_2d = lib.einsum("Li,Lj->ij", B_packed, B_packed, optimize=True)
+        del B_packed
+        self.mf._eri = ao2mo.restore(8, eri_2d, nemb)
+        del eri_2d
+        # self.mf._eri = ao2mo.restore(8, TEI, self.Norb) Original way of doing it, but allocates the full TEI in memory
         self.mf.scf(self.DMguess)
         if not self.mf.converged:
             dm = self.mf.mo_coeff @ np.diag(self.mf.mo_occ) @ self.mf.mo_coeff.T
@@ -78,10 +97,11 @@ class BaseSolver:
         one_body = 0.5 * lib.einsum(
             "ij,ij->", RDM1[:N, :], self.FOCK[:N, :] + self.OEI[:N, :]
         )
+        TEI = self.build_full_tei()
         two_body = 0.125 * (
-            lib.einsum("ijkl,ijkl->", RDM2[:N, :, :, :], self.TEI[:N, :, :, :])
-            + lib.einsum("ijkl,ijkl->", RDM2[:, :N, :, :], self.TEI[:, :N, :, :])
-            + lib.einsum("ijkl,ijkl->", RDM2[:, :, :N, :], self.TEI[:, :, :N, :])
-            + lib.einsum("ijkl,ijkl->", RDM2[:, :, :, :N], self.TEI[:, :, :, :N])
+            lib.einsum("ijkl,ijkl->", RDM2[:N, :, :, :], TEI[:N, :, :, :])
+            + lib.einsum("ijkl,ijkl->", RDM2[:, :N, :, :], TEI[:, :N, :, :])
+            + lib.einsum("ijkl,ijkl->", RDM2[:, :, :N, :], TEI[:, :, :N, :])
+            + lib.einsum("ijkl,ijkl->", RDM2[:, :, :, :N], TEI[:, :, :, :N])
         )
         return one_body + two_body

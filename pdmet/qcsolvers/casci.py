@@ -54,10 +54,11 @@ class CASCISolver(BaseCASSolver):
 
     def _single_root(self, fcivec, cas_norb):
         self.SS, _ = mcscf.spin_square(self.mc)
-        # Fast Implementation
-        RDM1 = self._cas_rdm1_to_local(fcivec, self.mc, cas_norb)
-        e_cell = self.kmf_ecore + self._impurity_energy_from_cas(
-            fcivec, self.mc, cas_norb, RDM1
+        casdm1_mo = self.mc.fcisolver.make_rdm1(fcivec, cas_norb, self.mc.nelecas)
+        casdm2_mo = self.mc.fcisolver.make_rdm2(fcivec, cas_norb, self.mc.nelecas)
+        RDM1 = self._cas_rdm1_to_local_from_dm(casdm1_mo, self.mc, cas_norb)
+        e_cell = self.kmf_ecore + self._impurity_energy_from_cas_df(
+            self.mc, cas_norb, RDM1, casdm2_mo
         )
 
         return e_cell, RDM1
@@ -65,9 +66,11 @@ class CASCISolver(BaseCASSolver):
     def _multi_root(self, fcivec, cas_norb, e_tot):
         RDM1s, e_cells, ss_list = [], [], []
         for i, civec in enumerate(fcivec):
-            rdm1 = self._cas_rdm1_to_local(civec, self.mc, cas_norb)
-            e_imp = self.kmf_ecore + self._impurity_energy_from_cas(
-                civec, self.mc, cas_norb, rdm1
+            casdm1_mo = self.mc.fcisolver.make_rdm1(civec, cas_norb, self.mc.nelecas)
+            rdm1 = self._cas_rdm1_to_local_from_dm(casdm1_mo, self.mc, cas_norb)
+            rdm2 = self.mc.fcisolver.make_rdm2(civec, cas_norb, self.mc.nelecas)
+            e_imp = self.kmf_ecore + self._impurity_energy_from_cas_df(
+                self.mc, cas_norb, rdm1, rdm2
             )
             ss = self.mc.fcisolver.spin_square(civec, cas_norb, self.mc.nelecas)[0]
             print(

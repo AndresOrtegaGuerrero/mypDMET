@@ -118,12 +118,19 @@ class CASPDFTSolver(BaseCASSolver):
 
     def _single_root_casscf(self, fcivec, cas_norb, e_tot):
         self.SS = self.mc.fcisolver.spin_square(fcivec, cas_norb, self.mc.nelecas)[0]
-        RDM1 = self._cas_rdm1_to_local(fcivec, self.mc, cas_norb)
-        e_cell = self.kmf_ecore + self._impurity_energy_from_cas(
-            fcivec, self.mc, cas_norb, RDM1
+        casdm1_mo = self.mc.fcisolver.make_rdm1(fcivec, cas_norb, self.mc.nelecas)
+        casdm2_mo = self.mc.fcisolver.make_rdm2(fcivec, cas_norb, self.mc.nelecas)
+        dm1sa_mo, dm1sb_mo = self.mc.fcisolver.make_rdm1s(
+            fcivec, cas_norb, self.mc.nelecas
+        )
+        RDM1 = self._cas_rdm1_to_local_from_dm(casdm1_mo, self.mc, cas_norb)
+        e_cell = self.kmf_ecore + self._impurity_energy_from_cas_df(
+            self.mc, cas_norb, RDM1, casdm2_mo
         )
         # Run DMET-PDFT correction
-        e_pdft, _ = self._get_dmet_pdft(fcivec, cas_norb)
+        e_pdft, _ = self._get_dmet_pdft(
+            cas_norb, casdm1_mo, casdm2_mo, [dm1sa_mo, dm1sb_mo]
+        )
         state_id = self.settings.state_specific_ or 0
         print(f"  State {state_id}: E(CASSCF)={e_tot:12.8f}  <S^2>={self.SS:8.6f}")
 
@@ -132,16 +139,23 @@ class CASPDFTSolver(BaseCASSolver):
     def _state_average(self, fcivec, cas_norb, e_tot, weights):
         RDM1s, e_cells, e_pdfts = [], [], []
         ss = self.mc.fcisolver.states_spin_square(fcivec, cas_norb, self.mc.nelecas)[0]
+        rdm1s_cas, rdm2s_cas = self.mc.fcisolver.states_make_rdm12(
+            fcivec, cas_norb, self.mc.nelecas
+        )
+        dm1sa_mos, dm1sb_mos = self.mc.fcisolver.states_make_rdm1s(
+            fcivec, cas_norb, self.mc.nelecas
+        )
         for i, civec in enumerate(fcivec):
-            # Fast Implementation
-            rdm1 = self._cas_rdm1_to_local(civec, self.mc, cas_norb)
-            e_imp = self.kmf_ecore + self._impurity_energy_from_cas(
-                civec, self.mc, cas_norb, rdm1
+            rdm1 = self._cas_rdm1_to_local_from_dm(rdm1s_cas[i], self.mc, cas_norb)
+            e_imp = self.kmf_ecore + self._impurity_energy_from_cas_df(
+                self.mc, cas_norb, rdm1, rdm2s_cas[i]
             )
-            e_pdft, _ = self._get_dmet_pdft(civec, cas_norb)
+            e_pdft, _ = self._get_dmet_pdft(
+                cas_norb, rdm1s_cas[i], rdm2s_cas[i], [dm1sa_mos[i], dm1sb_mos[i]]
+            )
             print(
                 f"  State {i} ({weights[i]:.3f}): E(CASSCF)={e_tot[i]:12.8f}  "
-                f"E(imp)={e_imp:12.8f}  <S^2>={ss:8.6f}"
+                f"E(imp)={e_imp:12.8f}  <S^2>={ss[i]:8.6f}"
             )
             RDM1s.append(rdm1)
             e_cells.append(e_imp)
@@ -155,16 +169,16 @@ class CASPDFTSolver(BaseCASSolver):
 
     def _get_dmet_pdft(
         self,
-        fcivec,
         cas_norb,
+        casdm1_mo,
+        casdm2_mo,
+        casdm1s,
     ):
-        casdm1s = self.mc.fcisolver.make_rdm1s(fcivec, cas_norb, self.mc.nelecas)
-        casdm1_mo, casdm2_mo = self.mc.fcisolver.make_rdm12(
-            fcivec, cas_norb, self.mc.nelecas
-        )
         ao2eo = self._ctx.local.get_ao2eo(self._ctx.emb_orbs)
         # Spin separated
-        RDM1Sa, RDM1Sb = self._cas_rdm1s_to_local(fcivec, self.mc, cas_norb)
+        RDM1Sa, RDM1Sb = self._cas_rdm1s_to_local(
+            self.mc, cas_norb, casdm1s[0], casdm1s[1]
+        )
         ao_basis_rdm1s = self._build_ao_basis_rdm1s(RDM1Sa, RDM1Sb)
         return get_dmet_pdft(
             self.mc,
@@ -220,7 +234,7 @@ class CASPDFTSolver(BaseCASSolver):
         # Return as (1, NAO, NAO) Gamma only
         return [np.asarray([ao_rdm1sa]), np.asarray([ao_rdm1sb])]
 
-    def _cas_rdm1s_to_local(self, ci, mc, cas_norb):
+    def _cas_rdm1s_to_local(self, mc, cas_norb, dm1sa_mo, dm1sb_mo):
         """
         Spin-separated full-space 1-RDMs in local basis.
         Only needed for periodic AO density construction.
@@ -229,7 +243,7 @@ class CASPDFTSolver(BaseCASSolver):
         core_MO = mc.mo_coeff[:, :core_norb]
         active_MO = mc.mo_coeff[:, core_norb : core_norb + cas_norb]
 
-        dm1sa_mo, dm1sb_mo = mc.fcisolver.make_rdm1s(ci, cas_norb, mc.nelecas)
+        # dm1sa_mo, dm1sb_mo = mc.fcisolver.make_rdm1s(ci, cas_norb, mc.nelecas)
 
         coredm1 = core_MO @ core_MO.T * 2  # total core — split equally
         casdm1a = lib.einsum(
@@ -314,7 +328,7 @@ def _compute_pdft_correction(
         vj = kmf.get_j(dm_kpts=np.asarray(ao_rdm1[0]), hermi=1)
         vk = None
 
-    Te_Vne = np.tensordot(h, np.asarray(ao_rdm1[0]))
+    Te_Vne = np.tensordot(h, np.asarray(ao_rdm1[0]))[0]  # [0] to get scalar
     E_j = np.tensordot(vj, np.asarray(ao_rdm1[0])) / 2
 
     #  Exchange
