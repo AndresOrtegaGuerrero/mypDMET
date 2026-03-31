@@ -1,5 +1,5 @@
 from pdmet.qcsolvers.casbase import BaseCASSolver
-from pyscf import mcscf, mrpt, lib
+from pyscf import mcscf, mrpt, lib, fci
 import numpy as np
 
 
@@ -41,8 +41,9 @@ class CASSCFSolver(BaseCASSolver):
         mo = self._mo_guess(self.mc)
 
         e_tot, _, fcivec = self.mc.kernel(mo)[:3]
-        if state_specific_ is None and state_average_ is not None:
-            e_tot = np.asarray(self.mc.e_states)
+        if state_specific_ is None:
+            if state_average_ is not None or state_average_mix_ is not None:
+                e_tot = np.asarray(self.mc.e_states)
         if not self.mc.converged:
             print("WARNING: CASSCF not converged")
 
@@ -53,6 +54,12 @@ class CASSCFSolver(BaseCASSolver):
             e_cell, RDM1 = self._single_root_casscf(fcivec, cas_norb, e_tot)
         elif state_average_ is not None:
             e_cell, RDM1 = self._state_average(fcivec, cas_norb, e_tot, state_average_)
+        elif state_average_mix_ is not None:
+            weights = []
+            for solver in state_average_mix_:
+                weights += solver.weights
+            print(f"State-average mixing weights: {weights}")
+            e_cell, RDM1 = self._state_average(fcivec, cas_norb, e_tot, weights)
 
         if self.settings.nevpt2_roots is not None:
             e_tot = self._run_nevpt2(cas_norb, cas_nelec, e_tot)
@@ -65,12 +72,21 @@ class CASSCFSolver(BaseCASSolver):
         if state_specific_ is not None:
             if "FakeCISolver" not in str(self.mc.fcisolver):
                 self.mc = self.mc.state_specific_(state_specific_)
-        elif state_average_ is not None and state_average_mix_ is None:
+        elif state_average_ is not None:
             if "FakeCISolver" not in str(self.mc.fcisolver):
+                print(f"Applying state-average with weights: {state_average_}")
                 self.mc = self.mc.state_average_(state_average_)
         elif state_average_mix_ is not None:
-            s1, s2, w = state_average_mix_
-            mcscf.state_average_mix_(self.mc, [s1, s2], w)
+            solvers = []
+            weight_list = []
+            for solver in state_average_mix_:
+                fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=solver.spin)
+                fci_solver.spin = solver.spin
+                fci_solver.nroots = solver.roots
+                solvers.append(fci_solver)
+                weight_list += solver.weights
+
+            mcscf.state_average_mix_(self.mc, solvers, weight_list)
         else:
             self.settings.nroots = 1
             self.mc.fcisolver.nroots = 1
@@ -114,27 +130,50 @@ class CASSCFSolver(BaseCASSolver):
         return e_cell, RDM1
 
     def _run_nevpt2(self, cas_norb, cas_nelec, e_tot):
-        spin = self.settings.nevpt2_spin or self.settings.twoS
-        nelecb = (cas_nelec - spin) // 2
-        neleca = cas_nelec - nelecb
-        mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
-        mc_ci.fcisolver.nroots = self.settings.nevpt2_nroots
-        fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
-
         print("=" * 45)
         e_casci_nevpt2, t_dm1s = [], []
-        for root in self.settings.nevpt2_roots:
-            ci = fcivec[root]
-            ss = mc_ci.fcisolver.spin_square(ci, cas_norb, mc_ci.nelecas)[0]
-            e_corr = mrpt.NEVPT(mc_ci, root).kernel()
-            e_cas_root = (
-                mc_ci.e_tot
-                if not isinstance(mc_ci.e_tot, np.ndarray)
-                else mc_ci.e_tot[root]
-            )
-            t_dm1s.append(self._transition_dm1(mc_ci, fcivec, root, cas_norb))
-            e_casci_nevpt2.append([ss, e_cas_root, e_cas_root + e_corr])
-            self._print_ci_analysis(ci, cas_norb, neleca, nelecb, root)
+
+        if hasattr(self.mc.fcisolver, "fcisolvers"):
+            solvers = self.mc.fcisolver.fcisolvers
+            nevpt2_roots = self.settings.nevpt2_roots
+            nevpt2_nroots = self.settings.nevpt2_nroots
+        else:
+            solvers = [self.mc.fcisolver]
+            nevpt2_roots = [self.settings.nevpt2_roots]
+            nevpt2_nroots = [self.settings.nevpt2_nroots]
+
+        # Iterate for each solver
+        for i, solver in enumerate(solvers):
+            if hasattr(solver, "spin") and solver.spin is not None:
+                spin = solver.spin
+            elif self.settings.nevpt2_spin is not None:
+                spin = self.settings.nevpt2_spin
+            else:
+                spin = self.settings.twoS
+
+            nelecb = (cas_nelec - spin) // 2
+            neleca = cas_nelec - nelecb
+            mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
+            mc_ci.fcisolver.nroots = nevpt2_nroots[i]
+            fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
+
+            # Ensure fcivec is always a list of CI vectors
+            if nevpt2_nroots[i] == 1:
+                fcivec = [fcivec]
+
+            # nevpt2 should be a list if state_average_mix_ is used
+            for root in nevpt2_roots[i]:
+                ci = fcivec[root]
+                ss = mc_ci.fcisolver.spin_square(ci, cas_norb, mc_ci.nelecas)[0]
+                e_corr = mrpt.NEVPT(mc_ci, root).kernel()
+                e_cas_root = (
+                    mc_ci.e_tot
+                    if not isinstance(mc_ci.e_tot, np.ndarray)
+                    else mc_ci.e_tot[root]
+                )
+                t_dm1s.append(self._transition_dm1(mc_ci, fcivec, root, cas_norb))
+                e_casci_nevpt2.append([ss, e_cas_root, e_cas_root + e_corr])
+                self._print_ci_analysis(ci, cas_norb, neleca, nelecb, root)
         e_casci_nevpt2 = np.asarray(e_casci_nevpt2)
 
         print("=" * 45)

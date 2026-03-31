@@ -20,7 +20,7 @@ Example
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Union
 from enum import Enum
 
 # All Enums shoulb be defined here
@@ -53,6 +53,26 @@ class CASType(str, Enum):
     FCI = "FCI"
     CheMPS2 = "CheMPS2"
     Block = "Block"
+
+
+# New features could be added later in needed (Symmetry for example)
+@dataclass
+class StateConfig:
+    spin: int
+    roots: int
+    weights: Union[float, List[float]]
+
+    def __post_init__(self):
+        if isinstance(self.weights, float):
+            self.weights = [self.weights] * self.roots
+        elif isinstance(self.weights, list):
+            if len(self.weights) != self.roots:
+                raise ValueError("Length of weights should match the number of roots")
+        else:
+            raise ValueError("Weights should be either a float or a list of floats")
+
+    def total_weight(self):
+        return sum(self.weights)
 
 
 class Solver(str, Enum):
@@ -161,8 +181,8 @@ class SolverSettings:
     molist: Optional[list] = None  # list of 1-based orbital indices for active space
     state_specific_: Optional[int] = 0
     state_average_: Optional[list] = None  # field(default_factory=lambda: [0.5, 0.5])
-    state_average_mix_: Optional[tuple] = (
-        None  # Wrapper can take different type of CI solvers and mix the solutions in given weights
+    state_average_mix_: Optional[List[Union[StateConfig, dict]]] = (
+        None  # list of (root1, root2) pairs to mix in state-average CASSCF
     )
     nevpt2_roots: Optional[list] = None  # field(default_factory=list)
     nevpt2_nroots: Optional[int] = None  # int = 10
@@ -180,20 +200,25 @@ class SolverSettings:
     def validate(self):
         if self.name == Solver.RCCSD and self.twoS != 0:
             raise Exception("RCCSD solver does not support ROHF wave function")
-        if "SS" in self.name:
-            assert self.nroots > self.state_specific_, (
-                "Number of roots should be greater than state-specific index for state-specific solvers"
-            )
-        if "SA" in self.name:
-            assert self.nroots == len(self.state_average_), (
-                "Number of roots should be equal to the length of state-average weights for state-average solvers"
-            )
+        if "SS-" in self.name:
+            self._validatate_state_specific()
+
+        if "SA-" in self.name:
+            self._validate_state_average()
+            self._validate_state_average_mix()
+
         if self.nevpt2_roots is not None:
-            assert self.nevpt2_nroots >= len(self.nevpt2_roots), (
-                "Increase the number of roots in the FCI solver"
-            )
-        else:
-            self.nevpt2_spin = self.twoS
+            if self.state_average_mix_ is not None:
+                assert len(self.nevpt2_roots) == len(self.state_average_mix_), (
+                    "Length of nevpt2_roots should match the number of states in state_average_mix_"
+                )
+
+            if self.state_average_ is not None:
+                assert len(self.nevpt2_roots) == self.nroots, (
+                    "Length of nevpt2_roots should match nroots for state-average solvers"
+                )
+            if self.nevpt2_spin is None:
+                self.nevpt2_spin = self.twoS
 
         if self.nroots > 1:
             if self.state_percent is not None:
@@ -206,6 +231,61 @@ class SolverSettings:
             else:
                 # Set percentage
                 self.state_percent = [1 / self.nroots] * self.nroots
+
+    def _validatate_state_specific(self):
+        assert self.nroots > self.state_specific_, (
+            "Number of roots should be greater than state-specific index for state-specific solvers"
+        )
+        assert self.state_average_ is None, (
+            "State-average weights should be None for state-specific solvers"
+        )
+        assert self.state_average_mix_ is None, (
+            "State-average mixing should be None for state-specific solvers"
+        )
+
+    def _validate_state_average(self):
+        assert self.nroots > 1, (
+            "Number of roots should be greater than 1 for state-average solvers"
+        )
+        assert self.state_specific_ is not None, (
+            "State-specific index should be None for state-average solvers"
+        )
+        assert (self.state_average_ is not None) ^ (
+            self.state_average_mix_ is not None
+        ), "Exactly one of state_average_ or state_average_mix_ must be provided"
+
+        if self.state_average_ is not None:
+            assert len(self.state_average_) == self.nroots, (
+                "Length of state-average weights should be equal to nroots for state-average solvers"
+            )
+            assert abs(sum(self.state_average_) - 1.0) < 1.0e-10, (
+                "State-average weights should sum to 1 for state-average solvers"
+            )
+
+    def _validate_state_average_mix(self):
+        if self.state_average_mix_ is not None:
+            clean_mix = []
+            for item in self.state_average_mix_:
+                if isinstance(item, StateConfig):
+                    clean_mix.append(item)
+                elif isinstance(item, dict):
+                    clean_mix.append(StateConfig(**item))
+                else:
+                    raise ValueError(
+                        "Items in state_average_mix_ must be either StateConfig or dict"
+                    )
+            self.state_average_mix_ = clean_mix
+
+            total_weights = sum(
+                config.total_weight() for config in self.state_average_mix_
+            )
+            assert abs(total_weights - 1.0) < 1e-8, (
+                "Total weights across all states must sum to 1"
+            )
+
+            assert len(self.state_average_mix_) > 1, (
+                "There should be at least two states to mix in state_average_mix_"
+            )
 
     def to_qcsolver_kwargs(self, is_KROHF):
         return dict(

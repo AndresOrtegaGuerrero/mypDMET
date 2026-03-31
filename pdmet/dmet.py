@@ -653,9 +653,18 @@ class pDMET:
                 )
 
             if self.solver.name.startswith("SA-"):
-                tprint.print_msg(
-                    "   State-average CASSCF with weight :", self.solver.state_average_
-                )
+                if self.solver.state_average_ is not None:
+                    tprint.print_msg(
+                        "   State-average CASSCF with weight :",
+                        self.solver.state_average_,
+                    )
+                elif self.solver.state_average_mix_ is not None:
+                    tprint.print_msg("   State-average CASSCF with mixed Solvers :")
+                    for i, mix in enumerate(self.solver.state_average_mix_):
+                        tprint.print_msg(
+                            " Solver %d: spin %d, roots %d, weight %s"
+                            % (i, mix.spin, mix.roots, str(mix.weights))
+                        )
             if "CASPDFT" in self.solver.name:
                 tprint.print_msg("   On-top functional:", self.solver.otxc or "tPBE")
 
@@ -693,7 +702,14 @@ class pDMET:
         if isinstance(self.e_tot, (list, np.ndarray)) and not is_pdft:
             # SA-CASSCF or multi-root
             tprint.print_msg("   Energy per cell  : %12.8f Eh" % self.e_tot[0])
-            weights = self.solver.state_average_
+            if self.solver.state_average_ is not None:
+                weights = self.solver.state_average_
+            elif self.solver.state_average_mix_ is not None:
+                weights = []
+                for solver in self.solver.state_average_mix_:
+                    weights += solver.weights
+            else:
+                weights = None
             for i, e in enumerate(self.e_tot):
                 if weights is not None:
                     tprint.print_msg(
@@ -712,13 +728,21 @@ class pDMET:
             )
 
         # NEVPT2
+
+        def ensure_flat(x):
+            """Helper function to flatten states for state_average_mix_"""
+            if x and isinstance(x[0], list):
+                return [item for sublist in x for item in sublist]
+            return x
+
         if self.solver.nevpt2_roots is not None:
+            nevpt2_states = ensure_flat(self.solver.nevpt2_roots)
             tprint.print_msg("   NEVPT2 energies for the selected states:")
             for i, e_nevpt2 in enumerate(self.e_nevpt2_tot):
                 tprint.print_msg(
                     "      State %d: E(pDMET CASCI) = %12.8f Eh  E(pDMET NEVPT2) = %12.8f Eh   <S^2> = %8.6f"
                     % (
-                        self.solver.nevpt2_roots[i],
+                        nevpt2_states[i],
                         self.e_casci_tot[i],
                         e_nevpt2,
                         self.ss_CASCI[i],
