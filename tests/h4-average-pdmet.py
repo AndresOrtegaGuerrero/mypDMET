@@ -7,15 +7,19 @@ from pyscf.pbc import gto, scf, df
 from pdmet import dmet
 from pdmet.tools import tchkfile
 
-
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 
 cell = gto.Cell()
-cell.atom = """H 5 5 4; H 5 5 5"""
+cell.atom = """
+H 1.0 1.0 1.0
+H 1.0 1.0 2.0
+H 2.0 1.0 1.0
+H 2.0 1.0 2.0
+"""
 cell.basis = "gth-dzv"
 cell.spin = 0
 cell.verbose = 2
-cell.max_memory = 10000
+cell.max_memory = 8000
 cell.a = np.eye(3) * 10
 cell.verbose = 5
 cell.build()
@@ -58,7 +62,7 @@ guiding_centres = .true.
 """
 w90 = pywannier90.W90(kmf, cell, kmesh, num_wann, other_keywords=keywords)
 w90.kernel()
-
+# tchkfile.save_w90(w90, 'chk_w90')
 kmf = tchkfile.load_kmf(cell, khf, kmesh, "chk_HF")
 """================================"""
 """ Run DMET """
@@ -67,42 +71,28 @@ pdmet = dmet.pDMET(
     cell,
     kmf,
     w90,
-    solver="CASCI",
-)  # pass an hf object (scf.ROHF(cell).density_fit()), not a khf object i.e. scf.KROHF(cell, kpts).density_fit(). scf.KROHF(cell, kpts).density_fit() prints an output type not compatible with slicing.
+    solver="SA-CASSCF",
+)
+
+# pdmet.kmf_chkfile = "chk_HF"
+# pdmet.w90_chkfile = "chk_w90"
 pdmet.emb.impCluster = [1]
 pdmet.emb.impOrbs_threshold = 1.5
 pdmet.solver.twoS = 0
-pdmet.solver.cas = (2, 2)
-pdmet.solver.e_shift = 0.5
+pdmet.solver.cas = (4, 4)
+# State-average over 2 states with equal weights
+pdmet.solver.nevpt2_roots = list(range(0, 2))
+pdmet.solver.state_average_ = [0.5, 0.5]
+pdmet.solver.nevpt2_nroots = 2
+
+# State average mixing example
+# pdmet.solver.state_average_mix_ = [
+#     StateConfig(spin=0, roots=1, weights=[0.5]),
+#     StateConfig(spin=2, roots=1, weights=[0.5]),
+# ]
+# pdmet.solver.nevpt2_roots = [[0], [0]]
+# pdmet.solver.nevpt2_nroots = [1, 1]
+
+pdmet.solver.nroots = 2
 pdmet.initialize()
 pdmet.one_shot()
-
-"""
-
-'''================================'''
-''' Molecular-point MC-PDFT  '''
-'''================================'''
-
-
-mol2 = cell.to_mol()
-hf = scf.ROHF(mol2).density_fit()
-# hf.with_df._cderi = 'gdf.h5'
-hf.verbose=5
-hf_2=hf
-hf.run()
-print("hf mo coeff",hf.mo_coeff)
-######################## print("mo coefficient of hfyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",hf.mo_coeff)
-######################## randommc= mcscf.CASSCF(hf, 4, 2)
-
-######################## print("randommc.mo_coeff",randommc.mo_coeff)
-mc = mcpdft.CASSCF (hf, 'tPBE', 4, 2, grids_level=6)
-mc = mc.fix_spin_(shift=0.5, ss=2)
-print("mcpdft mo coeff is --------------------------------------",mc.mo_coeff)
-############################## mc.fcisolver = csf_solver (cell, smult = 1)
-mc.verbose = 3
-Vnn = mc._scf.energy_nuc()
-print("Vnn ----------------------------------------------------------------------------------------XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",Vnn)
-mc.kernel ()
-print("mc.mo_occ",mc.mo_occ)
-
-"""

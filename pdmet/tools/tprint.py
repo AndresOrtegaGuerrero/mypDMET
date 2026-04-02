@@ -21,26 +21,21 @@ Email: Hung Q. Pham <pqh3.14@gmail.com>
 
 import datetime
 import pdmet
-import sys
 
 
 def print_header():
     print("-----------------------------------------------------------------")
     print("   pDMET: Density Matrix Embedding Theory for Periodic Systems")
-    print("                            Version: %s" % (pdmet.__version__))
+    print(f"                            Version: {pdmet.__version__}")
     print("                         Author: Hung Q. Pham")
     print("                       Email: pqh3.14@gmail.com")
     print(
-        "                 Current time: %s"
-        % (datetime.datetime.now().strftime("%Y/%m/%d - %H:%M:%S"))
+        f"                 Current time: {datetime.datetime.now().strftime('%Y/%m/%d - %H:%M:%S')}"
     )
-    print("-----------------------------------------------------------------")
-    sys.stdout.flush()
+    print(
+        "-----------------------------------------------------------------", flush=True
+    )
 
 
-def print_msg(msg=None, *kargs):
-    if msg is None:
-        print()
-    else:
-        print(msg, *kargs)
-    sys.stdout.flush()
+def print_msg(*args):
+    print(*args, flush=True)

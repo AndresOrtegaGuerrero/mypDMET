@@ -1,9 +1,9 @@
 import numpy as np
-from scipy.misc import derivative
+from scipy.differentiate import derivative
 from pyscf.pbc import gto, scf, df
 
 import pywannier90
-from pDMET.pdmet import dmet
+from pdmet import dmet
 
 """
 To avoid warning, run

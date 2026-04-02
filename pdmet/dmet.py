@@ -16,16 +16,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-Email: Hung Q. Pham <pqh3.14@gmail.com>
 """
 
 import numpy as np
 from pyscf import lib
 from scipy import optimize
-from pdmet import localbasis, qcsolvers, diis, df_hamiltonian
+from pdmet import localbasis, diis, df_hamiltonian
 from pdmet.schmidtbasis import get_bath_using_RHF_1RDM
 from pdmet.tools import tchkfile, tplot, tprint, tunix, misc
 from pdmet.lib import libdmet
+from pdmet.settings import EmbeddingSettings, SolverSettings, SCFSettings
 
 import pywannier90
 
@@ -37,18 +37,17 @@ class pDMET:
         kmf,
         w90,
         solver="HF",
-        mc_dup=None,
         state_average_mix_=None,
         nevpt2_spin=None,
+        verbose=0,
+        max_memory=4000,
     ):
         """
         Args:
-            kmf                             : a rhf wave function from pyscf/pbc
-            w90                                : a converged wannier90 object
-            OEH_type                        : One-electron Hamiltonian used in the bath construction, h(k) = OEH(k) + umat(k)
-            SCmethod                        : 'BFGS'/'CG'/'Newton-CG' self-consistent iteration method, defaut: BFGS
-            SC_threshold                    : convergence criteria for correlatiself.e_toton potential, default: 1e-6
-            SC_maxcycle                     : maximum cycle for self-consistent iteration, default: 50
+            cell                           : a pyscf Cell object
+            kmf                            : a rhf wave function from pyscf/pbc
+            w90                            : a converged pywannier90 object
+            solver                         : name of the quantum chemistry solver for the impurity problem.
             umat                            : correlation potential
             chempot                         : global chemical potential
             emb_corr_1RDM                   : correlated 1RDM from high-level calculations
@@ -64,98 +63,23 @@ class pDMET:
         self.w90 = w90
         self.kmf_chkfile = None
         self.w90_chkfile = None
-        self.mc_dup = mc_dup
 
-        # Options
-        self.OEH_type = "FOCK"  # Options: FOCK/OEI
-
-        # QC Solver
-        solver_list = [
-            "HF",
-            "MP2",
-            "CASCI",
-            "DMRG-CI",
-            "CASSCF",
-            "CASPDFT",
-            "DMRG-SCF",
-            "SS-CASPDFT",
-            "SS-CASSCF",
-            "SS-DMRG-SCF",
-            "SA-CASPDFT",
-            "SA-CASSCF",
-            "SA-DMRG-SCF",
-            "FCI",
-            "DMRG",
-            "RCCSD",
-            "RCCSD_T",
-            "SHCI",
-        ]
-        assert solver in solver_list, (
-            "Solver options: HF, MP2, CASCI, DMRG-CI, \
-                                     CASSCF, CASPDFT, DMRG-SCF, SS-CASPDFT, SS-CASSCF, SS-DMRG-SCF, SA-CASPDFT, SA-CASSCF, SA-DMRG-SCF \
-                                     FCI, DMRG, RCCSD, SHCI"
+        # Self consistency options
+        self.scf = SCFSettings()
+        # Embedding options
+        self.emb = EmbeddingSettings()
+        # Solver options
+        self.solver = SolverSettings(
+            name=solver,
+            nevpt2_spin=nevpt2_spin,
+            state_average_mix_=state_average_mix_,
+            verbose=verbose,
+            max_memory=max_memory,
         )
-        self.solver = solver
-        self.e_shift = None  # Use to fix spin of the wrong state with FCI, hence CASCI/CASSCF solver
-        self.use_GDF = (
-            True  # Mostly using for FFTDF where density fitting is not available
-        )
-
-        # Gamma sampling embedding
-        self.impCluster = None
-        self._impOrbs_threshold = 1.0
-        self._impOrbs_rmlist = None
-        self._impOrbs_addlist = None
-        self._num_bath = None
-        self.nroots = 10
-        self.nevpt2_nroots = 10
-        self.nevpt2_roots = None
-        self.nevpt2_spin = nevpt2_spin
-        self.state_average_ = None
-        self.state_average_mix_ = None
-        if solver in [
-            "CASCI",
-            "CASSCF",
-            "CASPDFT",
-            "SS-CASSCF",
-            "SS-CASPDFT",
-            "SS-DMRG-SCF",
-            "SA-CASSCF",
-            "SA-CASPDFT",
-            "SA-DMRG-SCF",
-        ]:
-            self.cas = None
-            self.molist = None
-            if solver in ["SS-CASSCF", "SS-CASPDFT", "SS-DMRG-SCF"]:
-                self.state_specific_ = 0
-            elif solver in ["SA-CASSCF", "SA-CASPDFT", "SA-DMRG-SCF"]:
-                if state_average_mix_ is None:
-                    self.state_average_ = [0.5, 0.5]
-                else:
-                    self.state_average_mix_ = state_average_mix_
-
-        # Parameters
-        self.SC_method = "BFGS"  # BFGS, CG, Newton-CG
-        self.SC_threshold = 1e-4
-        self.SC_maxcycle = 200
-        self.SC_CFtype = "F"  # Options: ['F','diagF', 'FB','diagFB']
-        self.alt_CF = False
-        self.dft_CF = False
-        self.dft_is_kpts = False
-        self.dft_CF_constraint = 1
-        self.dft_HF = None
-        self.xc = None
-        self.xc_omega = None
-        self.damping = 1.0  # 1.0 means no damping
-        self.DIIS = False
-        self.DIIS_m = 1
-        self.DIIS_n = 8
 
         # DMET Output
-        self.state_percent = None
-        self.twoS = None
-        self.verbose = 0
-        self.max_memory = 4000  # in MB
+        self.verbose = verbose
+        self.max_memory = max_memory
         self.loc_OEH_kpts = None
         self.loc_1RDM_kpts = None
         self.loc_1RDM_R0 = None
@@ -170,22 +94,31 @@ class pDMET:
         self.nelec_per_cell = None
 
         # Others
-        self.bath_truncation = True  # if self.truncate = a threshold, then a bath truncation scheme is used
         self.chkfile = "pdmet.chk"  # Save integrals in the WFs basis as well as chem potential and uvec
         self.restart = False  # Run a calculation using saved chem potential and uvec
         self._cycle = 1
 
-    def initialize(self, ERI=None):
+    def initialize(self):
         """
         Prepare the local integrals, correlation/chemical potential
         """
-
         tprint.print_msg("Initializing ...")
+        self._load_checkfiles()
+        self._detect_rohf()
+        self._setup_xc()
+        self._initialize_local_basis()
+        self._initialize_impurity()
+        self._initialize_embedding_settings()
+        self._initialize_correlation_potential()
+        self._initialize_scf_settings()
+        self._initialize_qcsolver()
+        tprint.print_msg("Initializing ... DONE")
 
-        # -------------------------------------------------
-        # General initialized attributes
+    def _load_checkfiles(self):
+        """Load saved kmf/w90 object if checkfiles are set"""
+        assert (self.chkfile is None) or isinstance(self.chkfile, str)
         self.kmesh = self.w90.mp_grid_loc
-        if (self.kmf_chkfile is not None) and hasattr(self.kmf.with_df, "_cderi"):
+        if self.kmf_chkfile is not None and hasattr(self.kmf.with_df, "_cderi"):
             self.kmf = tchkfile.load_kmf(
                 self.cell,
                 self.kmf,
@@ -200,14 +133,8 @@ class pDMET:
                     print(
                         "WARNING: Provide density fitting file in initiating kmf object or make sure the saved kmf object is using the same density fitting"
                     )
-            self._is_ROHF = self.kmf._is_ROHF
-        else:
-            from pyscf.pbc import scf
-
-            if isinstance(self.kmf, scf.krohf.KROHF):
-                self._is_ROHF = True
-            else:
-                self._is_ROHF = False
+        if self.w90_chkfile is not None:
+            self.w90 = tchkfile.load_w90(self.w90, self.w90_chkfile)
 
         if self.kmf.exxdiv is not None:
             raise Exception(
@@ -217,209 +144,191 @@ class pDMET:
             # if self.kmf.exxdiv == 'ewald': actOEI_kpts += self.exxdiv_ewald(cell)
             # to get the finite correction, see https://github.com/pyscf/pyscf/issues/250
 
-        if self.w90_chkfile is not None:
-            self.w90 = tchkfile.load_w90(self.w90, self.w90_chkfile)
-        else:
-            self.w90 = self.w90
+    def _detect_rohf(self):
+        """Determine if the mean-field is ROHF and validate spin settings."""
+        from pyscf.pbc import scf
 
-        if self.twoS is None:
-            self.twoS = self.cell.spin
+        self._is_ROHF = isinstance(self.kmf, scf.krohf.KROHF) or getattr(
+            self.kmf, "_is_ROHF", False
+        )
 
-        else:
-            if self.twoS != self.cell.spin:
-                tprint.print_msg(
-                    " WARNING: the 2S in DMET is different from that of the mean-field wave function. \
-                                   Hope you know what you're doing"
-                )
+        if self.solver.twoS is None:
+            self.solver.twoS = self.cell.spin
+        elif self.solver.twoS != self.cell.spin:
+            tprint.print_msg(
+                " WARNING: the 2S in DMET is different from that of the mean-field wave function. \
+                               Hope you know what you're doing"
+            )
 
-        if self.nevpt2_spin is None:
-            self.nevpt2_spin = self.twoS
+    def _setup_xc(self):
+        """Setup the exchange-correlation functional for DFT embedding."""
+        xc = self.emb.xc
+        self.emb.dft_CF = xc is not None
 
-        assert (self.chkfile is None) or isinstance(self.chkfile, str)
+        if xc is not None:
+            self.emb.OEH_type = xc
+
+            if xc == "RSH-PBE0" and self.emb.xc_omega is None:
+                self.emb.xc_omega = 0.2
+
+    def _initialize_local_basis(self):
+        """Create the local basis from Pywannier90 object"""
         self.kpts = self.kmf.kpts
         self.Nkpts = self.kpts.shape[0]
-        if self.xc is not None:
-            self.dft_CF = True
-            self.OEH_type = self.xc
-            if self.xc == "RSH-PBE0" and self.xc_omega is None:
-                self.xc_omega = 0.2
-        else:
-            self.dft_CF = False
 
-        # For the Gamma-sampling DMET
-        if self.impCluster is not None:
-            assert np.prod(self.kmesh) == 1, (
-                "impCluster is used only for a Gamma-point sampling calculation"
-            )
-            self._impOrbs, self._impAtms = misc.make_imp_orbs(
-                self.cell,
-                self.w90,
-                self.impCluster,
-                threshold=self._impOrbs_threshold,
-                rm_list=self._impOrbs_rmlist,
-                add_list=self._impOrbs_addlist,
-            )
-            self.Nimp = np.sum(self._impOrbs)
-            self._is_gamma = True
-
-            tprint.print_msg("==== Impurity cluster ====")
-            tprint.print_msg(
-                " No. of Impurity atoms   : {0}".format(len(self.impCluster))
-            )
-            tprint.print_msg(" No. of Impurity orbitals: {0}".format(self.Nimp))
-            atom_coords = self.cell.atom_coords() * lib.param.BOHR
-            for i, atm in enumerate(self.impCluster):
-                symbol = self.cell.atom_symbol(atm - 1)
-                x, y, z = atom_coords[atm - 1]
-                tprint.print_msg(
-                    "  {0:3d}  {1:3s}  {2:3.5f} {3:3.5f} {4:3.5f}".format(
-                        atm, symbol, x, y, z
-                    )
-                )
-                impAtms = self._impAtms[i].tolist()
-                nimpOrbs = len(impAtms)
-                impAtms = [nimpOrbs] + impAtms
-                tprint.print_msg(
-                    ("       {:d} Orbitals: " + "{:d} " * nimpOrbs).format(*impAtms)
-                )
-
-            tprint.print_msg("==========================")
-        else:
-            self.Nimp = self.local.nlo  # the whole reference unit cell is the imputity
-            self._is_gamma = False
-            assert self.twoS == 0, (
-                "ROHF bath is only available for Gamma-sampling calculation"
-            )
-
-        # Initilize the local space object
         self.local = localbasis.Local(
-            self.cell, self.kmf, self.w90, self._is_ROHF, self.xc_omega
+            self.cell, self.kmf, self.w90, self._is_ROHF, self.emb.xc_omega
         )
         self.e_core = self.local.e_core
-
-        # -------------------------------------------------
-        # The number of bath orbitals depends on whether one does Schmidt decomposition on RHF or ROHF wave function
-        if self._is_ROHF:
-            self.bathtype = "ROHF"
-        else:
-            self.bathtype = "RHF"
 
         self.Norbs = self.local.nlo * self.Nkpts
         self.Nelec_total = self.local.nelec_total
         self.Nelec_per_cell = self.local.nelec_per_cell
         self.numPairs = self.Nelec_per_cell // 2
 
-        if self.SC_CFtype in ["diagF", "diagFB"]:
+    def _initialize_impurity(self):
+        """Initialize the impurity system."""
+        if self.emb.impCluster is not None:
+            assert np.prod(self.kmesh) == 1, (
+                "impCluster is used only for a Gamma-point sampling calculation"
+            )
+
+            self._impOrbs, self._impAtms = misc.make_imp_orbs(
+                self.cell,
+                self.w90,
+                self.emb.impCluster,
+                threshold=self.emb.impOrbs_threshold,
+                rm_list=self.emb.impOrbs_rmlist,
+                add_list=self.emb.impOrbs_addlist,
+            )
+
+            self.Nimp = np.sum(self._impOrbs)
+            self._is_gamma = True
+
+            self._print_impurity_cluster()
+
+        else:
+            self.Nimp = self.local.nlo
+            self._impOrbs = None
+            self._impAtms = None
+            self._is_gamma = False
+
+            assert self.solver.twoS == 0, (
+                "ROHF bath is only available for Gamma-sampling calculation"
+            )
+
+    def _print_impurity_cluster(self):
+        tprint.print_msg("==== Impurity cluster ====")
+        tprint.print_msg(f" No. of Impurity atoms   : {len(self.emb.impCluster)}")
+        tprint.print_msg(f" No. of Impurity orbitals: {self.Nimp}")
+
+        atom_coords = self.cell.atom_coords() * lib.param.BOHR
+
+        for i, atm in enumerate(self.emb.impCluster):
+            symbol = self.cell.atom_symbol(atm - 1)
+            x, y, z = atom_coords[atm - 1]
+
+            tprint.print_msg(f"  {atm:3d}  {symbol:3s}  {x:3.5f} {y:3.5f} {z:3.5f}")
+
+            impAtms = self._impAtms[i].tolist()
+            nimpOrbs = len(impAtms)
+
+            impAtms = [nimpOrbs] + impAtms
+
+            tprint.print_msg(
+                ("       {:d} Orbitals: " + "{:d} " * nimpOrbs).format(*impAtms)
+            )
+
+        tprint.print_msg("==========================")
+
+    def _initialize_embedding_settings(self):
+        """Initialize the embedding settings."""
+        # The number of bath orbitals depends on whether one does Schmidt decomposition on RHF or ROHF wave function
+        self.bathtype = "ROHF" if self._is_ROHF else "RHF"
+        if self.scf.CF_type in ["diagF", "diagFB"]:
             self.Nterms = self.Nimp
         else:
             self.Nterms = self.Nimp * (self.Nimp + 1) // 2
 
         self.mask = self.make_mask(self._is_gamma)
-        if self._is_gamma:
-            self.mask4Gamma = self.mask
-        else:
-            self.mask4Gamma = None
+
+        self.mask4Gamma = self.mask if self._is_gamma else None
+
         self.H1start, self.H1row, self.H1col = self.make_H1(
             self._is_gamma, self._impOrbs
         )[1:4]  # Use in the calculation of 1RDM derivative
 
+    def _initialize_correlation_potential(self):
         self.chempot = 0.0
-        if self.dft_CF:
-            self.uvec = df_hamiltonian.get_init_uvec(self.xc, self.dft_HF)
+
+        # If DFT CF is used, the correlation potential is initialized as the DFT XC potential
+        if self.emb.dft_CF:
+            self.uvec = df_hamiltonian.get_init_uvec(self.emb.xc, self.emb.dft_HF)
             self.bounds = df_hamiltonian.get_bounds(
-                self.xc, self.dft_CF_constraint, self.dft_HF
+                self.emb.xc,
+                self.emb.dft_CF_constraint,
+                self.emb.dft_HF,
             )
+
         else:
             self.uvec = np.zeros(self.Nterms, dtype=np.float64)
+
         self.umat = self.uvec2umat(self.uvec)
 
-        # -------------------------------------------------
-        # Load/initiate chem pot, uvec, umat
-        # TODO: no longer used, Consider to remove this
+    def _initialize_restart(self):
         self.restart_success = False
+
         if self.chkfile is not None and self.restart:
             if tunix.check_exist(self.chkfile):
                 self.save_pdmet = tchkfile.load_pdmet(self.chkfile)
+
                 self.chempot = self.save_pdmet.chempot
                 self.uvec = self.save_pdmet.uvec
                 self.umat = self.save_pdmet.umat
+
                 self.emb_corr_1RDM = self.save_pdmet.actv1RDMloc
                 self.emb_orbs = self.save_pdmet.emb_orbs
                 self.emb_core_orbs = self.save_pdmet.emb_core_orbs
+
                 tprint.print_msg("-> Load the pDMET chkfile")
+
                 self.restart_success = True
-                print("self.emb_orbs in init", self.emb_orbs)
-                print("self.emb_core_orbs in init", self.emb_core_orbs)
+
             else:
                 tprint.print_msg("-> Cannot load the pDMET chkfile")
-                self.restart_success = False
 
-        if self.alt_CF is True:
-            # TODO: debugging the alternative cost function, this will be updated
+    def _initialize_scf_settings(self):
+        if self.scf.alt_CF:
             pass
         else:
             self.CF = self.cost_func
             self.CF_grad = self.cost_func_grad
 
-        # Initializing damping procedure and DIIS object
-        if self.DIIS:
-            assert self.DIIS_m >= 1
-            self._diis = diis.DIIS(self.DIIS_m, self.DIIS_n)
+        if self.scf.use_DIIS:
+            self._diis = diis.DIIS(self.scf.DIIS_start, self.scf.DIIS_nvector)
 
-        if self.damping != 1.0:
-            assert 0 <= self.damping <= 1.0
+        self.scf.validate()
 
-        # Initializing the QC solver
-        if self.nroots > 1:
-            if self.state_percent is None:
-                self.state_percent = [1 / self.nroots] * self.nroots
-            else:
-                assert len(self.state_percent) == self.nroots
-                assert (
-                    abs(sum(self.state_percent) - 1.0) < 1.0e-10
-                )  # The total percent has be 1
+    def _initialize_qcsolver(self):
+        self._SS = 0.5 * self.solver.twoS * (0.5 * self.solver.twoS + 1)
+        self.solver.validate()
+        self.qcsolver = self.solver.build_solver(is_KROHF=self._is_ROHF)
 
-        if self.twoS != 0 and self.solver == "RCCSD":
-            raise Exception("RCCSD solver does not support ROHF wave function")
+    def _build_pdft_context(self):
+        from pdmet.qcsolvers.caspdft import PDFTContext
 
-        # For FCI, CAS-like solver
-        print(qcsolvers.QCsolvers)
-        self._SS = 0.5 * self.twoS * (0.5 * self.twoS + 1)
-        self.qcsolver = qcsolvers.QCsolvers(
-            self.solver,
-            self.twoS,
-            self._is_ROHF,
-            self.e_shift,
-            self.nroots,
-            self.state_percent,
-            verbose=self.verbose,
-            memory=self.max_memory,
+        """Build PDFTContext from local + pDMET state."""
+        return PDFTContext(
+            cell=self.cell,
+            kmf=self.kmf,
+            local=self.local,
+            emb_orbs=self.emb_orbs,
+            core_orbs=self.core_orbs,
+            emb_core_orbs=self.emb_core_orbs,
+            OEH_type=self.emb.OEH_type,
+            mask4Gamma=self.mask4Gamma,
+            otxc=self.solver.otxc,
         )
-        if self.solver in [
-            "CASCI",
-            "CASSCF",
-            "CASPDFT",
-            "SS-CASSCF",
-            "SS-CASPDFT",
-            "SS-DMRG-SCF",
-            "SA-CASSCF",
-            "SA-CASPDFT",
-            "SA-DMRG-SCF",
-        ]:
-            self.qcsolver.cas = self.cas
-            self.qcsolver.molist = self.molist
-            if "SS-" in self.solver:
-                assert self.nroots > self.state_specific_, (
-                    "Increasing the number of roots in the FCI solver"
-                )
-            if "SA-" in self.solver:
-                self.qcsolver.nroots = len(self.state_average_)
-        if self.nevpt2_roots is not None:
-            assert self.nevpt2_nroots >= len(self.nevpt2_roots), (
-                "Increasing the number of roots in the FCI solver"
-            )
-
-        tprint.print_msg("Initializing ... DONE")
 
     def kernel(self, chempot=0.0):
         """
@@ -435,36 +344,53 @@ class pDMET:
             nelec                           : the number of electrons for the unit cell
             emb_corr_1RDM                   : correlated 1RDM for the unit cell
         """
+        from pdmet.qcsolvers.registry import dispatch
 
-        # Transform the 1e/2e integrals and the JK core constribution to schmidt basis
-        fock = self.local.get_real_space_OEI_for_MCPDFT(  # noqa: F841
-            self.loc_1RDM_kpts, self.local.get_ao2eo(self.emb_orbs)
-        )
-        if self._is_new_bath is True:
+        if self._is_new_bath:
             ao2eo = self.local.get_ao2eo(self.emb_orbs)
             self.emb_OEI = self.local.get_emb_OEI(ao2eo)
-            if self.use_GDF:
-                self.emb_TEI = self.local.get_emb_TEI(ao2eo)
-            else:
-                self.emb_TEI = self.local.get_TEI(ao2eo)
+            # Original way of getting TEI, but allocates the full TEI in memory
+            # self.emb_TEI = (
+            #     self.local.get_emb_TEI(ao2eo)
+            #     if self.emb.use_GDF
+            #     else self.local.get_TEI(ao2eo)
+            # )
+            self.emb_TEI = (
+                self.local.get_emb_B(ao2eo)
+                if self.emb.use_GDF
+                else self.local.get_TEI(ao2eo)
+            )
             self.emb_mf_1RDM = self.local.loc_kpts_to_emb(
                 self.loc_1RDM_kpts, self.emb_orbs
             )
-            # print("Does the backmultiplication work?",self.local.loc_kpts_to_emb(self.loc_1RDM_kpts, self.emb_orbs, self.core_orbs, self.emb_core_orbs))
             self.emb_JK = self.local.get_emb_JK(self.loc_1RDM_kpts, ao2eo)
-            self.emb_coreJK = self.local.get_emb_coreJK(
+            # self.emb_coreJK = self.local.get_emb_coreJK(
+            #     self.emb_JK, self.emb_TEI, self.emb_mf_1RDM
+            # )
+            self.emb_coreJK = self.local.get_emb_coreJK_df(
                 self.emb_JK, self.emb_TEI, self.emb_mf_1RDM
             )
             self.ao2eo = ao2eo
-        # TODO: currently, the 1RDM guess is chempot independent
-        # emb_guess_1RDM = self.local.get_emb_guess_1RDM(self.emb_FOCK, self.Nelec_in_emb, self.Nimp, chempot)
-        emb_guess_1RDM = self.emb_mf_1RDM
+
+        # Emb 1-RDM guess
+        # Gamma-point: chempot=0 always - use precomputed mf_1RDM
+        # k-points   : chempot varies
+        # ------------------------------------------------------------------
+        if self._is_gamma:
+            emb_guess_1RDM = self.emb_mf_1RDM
+        else:
+            emb_FOCK = self.emb_OEI + self.emb_coreJK
+            emb_guess_1RDM = self.local.get_emb_guess_1RDM(
+                emb_FOCK, self.Nelec_in_emb, self.Nimp, chempot
+            )
         if self._cycle == 1:
             tprint.print_msg(
                 "   Embedding size: %2d electrons in (%2d impurities + %2d baths )"
                 % (self.Nelec_in_emb, self.Nimp, self.Nbath)
             )
 
+        # ------------------------------------
+        # Initialize and run QC solver
         self.qcsolver.initialize(
             self.local.e_core,
             self.emb_OEI,
@@ -476,228 +402,157 @@ class pDMET:
             self.Nimp,
             chempot,
         )
-        if self.solver == "HF":
-            e_cell, e_solver, RDM1 = self.qcsolver.HF()
-        elif self.solver == "MP2":
-            e_cell, e_solver, RDM1 = self.qcsolver.MP2()
-        elif self.solver in ["CASCI"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASCI(
-                nevpt2_roots=self.nevpt2_roots, nevpt2_nroots=self.nevpt2_nroots
-            )
-        elif self.solver in ["DMRG-CI"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASCI(
-                solver="CheMPS2",
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-            )
-        elif self.solver in ["CASSCF"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASSCF(
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-                nevpt2_spin=self.nevpt2_spin,
-            )
-        elif self.solver in ["CASPDFT"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASPDFT(
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-                nevpt2_spin=self.nevpt2_spin,
-                cell=self.cell,
-                mc_dup=self.mc_dup,
-                kmf=self.kmf,
-                w90=self.w90,
-                emb_orbs=self.emb_orbs,
-                ao2eo=self.ao2eo,
-                mask4Gamma=self.mask4Gamma,
-                OEH_type=self.OEH_type,
-                emb_core_orbs=self.emb_core_orbs,
-                core_orbs=self.core_orbs,
-            )
-        elif self.solver in ["DMRG-SCF"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASSCF(
-                solver="CheMPS2",
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-                nevpt2_spin=self.nevpt2_spin,
-            )
-        elif self.solver in ["SS-CASSCF"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASSCF(
-                state_specific_=self.state_specific_,
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-                nevpt2_spin=self.nevpt2_spin,
-            )
-        elif self.solver in ["SA-CASSCF"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASSCF(
-                state_average_=self.state_average_,
-                state_average_mix_=self.state_average_mix_,
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-                nevpt2_spin=self.nevpt2_spin,
-            )
-        elif self.solver in ["SS-CASPDFT"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASPDFT(
-                state_specific_=self.state_specific_,
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-                nevpt2_spin=self.nevpt2_spin,
-                cell=self.cell,
-                mc_dup=self.mc_dup,
-                kmf=self.kmf,
-                w90=self.w90,
-                emb_orbs=self.emb_orbs,
-                ao2eo=self.ao2eo,
-                mask4Gamma=self.mask4Gamma,
-                OEH_type=self.OEH_type,
-                emb_core_orbs=self.emb_core_orbs,
-                core_orbs=self.core_orbs,
-            )
-        elif self.solver in ["SA-CASPDFT"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASPDFT(
-                state_average_=self.state_average_,
-                state_average_mix_=self.state_average_mix_,
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-                nevpt2_spin=self.nevpt2_spin,
-                cell=self.cell,
-                mc_dup=self.mc_dup,
-                kmf=self.kmf,
-                w90=self.w90,
-                emb_orbs=self.emb_orbs,
-                ao2eo=self.ao2eo,
-                mask4Gamma=self.mask4Gamma,
-                OEH_type=self.OEH_type,
-                emb_core_orbs=self.emb_core_orbs,
-                core_orbs=self.core_orbs,
-            )
-        elif self.solver in ["SS-DMRG-SCF"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASSCF(
-                solver="CheMPS2",
-                state_specific_=self.state_specific_,
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-            )
-        elif self.solver in ["SA-DMRG-SCF"]:
-            e_cell, e_solver, RDM1 = self.qcsolver.CASSCF(
-                solver="CheMPS2",
-                state_average_=self.state_average_,
-                nevpt2_roots=self.nevpt2_roots,
-                nevpt2_nroots=self.nevpt2_nroots,
-            )
-        elif self.solver == "FCI":
-            e_cell, e_solver, RDM1 = self.qcsolver.FCI()
-        elif self.solver == "DMRG":
-            e_cell, e_solver, RDM1 = self.qcsolver.DMRG()
-        elif self.solver == "RCCSD":
-            e_cell, e_solver, RDM1 = self.qcsolver.RCCSD()
-        elif self.solver == "RCCSD_T":
-            e_cell, e_solver, RDM1 = self.qcsolver.RCCSD_T()
-        elif self.solver == "SHCI":
-            e_cell, e_solver, RDM1 = self.qcsolver.SHCI()
 
+        # Build PDFTContext only when needed
+        pdft_context = None
+        if "CASPDFT" in self.solver.name:
+            pdft_context = self._build_pdft_context()
+
+        # Launch the kernel of the solver with settings
+        e_cell, e_solver, RDM1 = dispatch(self.qcsolver, self.solver, pdft_context)
+        # ------------------------------------
+        # ------------------------------------
+        # Update correlated 1-RDM
         self.emb_corr_1RDM = RDM1
         self.loc_corr_1RDM_R0 = lib.einsum(
             "Rim,mn,jn->Rij", self.emb_orbs, RDM1, self.emb_orbs[0].conj()
         )
-        # print("self.ao2eo_1RDM_R0 from loc_corr_1RDM_R0", lib.einsum('Rim,mn,jn->Rij', self.ao2eo.real, RDM1, self.ao2eo[0].real.conj()))
 
         if not np.isclose(self._SS, self.qcsolver.SS):
             tprint.print_msg(
                 "           WARNING: Spin contamination. Computed <S^2>: %10.8f, Target: %10.8f"
                 % (self.qcsolver.SS, self._SS)
             )
-
-        # Get the cell energy:
+        # ------------------------------------
+        # ------------------------------------
+        # Compute cell energy
         if self._is_gamma:
-            # The Gamma-point calculation assumes one active space, so CASCI-like formular is used to compute the energy
-            if self._is_new_bath:
-                if np.shape([self.core_orbs])[-1] != 0:
-                    ao2core = self.local.get_ao2core(self.core_orbs)
-                    lo2core = self.local.get_lo2core(self.core_orbs)
-                    core_OEI = self.local.get_core_OEI(ao2core)
-                    Nelec_in_core = self.Nelec_total - self.Nelec_in_emb
-                    core_1RDM = self.local.get_core_mf_1RDM(
-                        lo2core, Nelec_in_core, self.loc_OEH_kpts
-                    )
-                    loc_core_1RDM = lib.einsum(
-                        "kim,mn,kjn->kij", lo2core, core_1RDM, lo2core.conj()
-                    )
-                    core_JK = self.local.get_core_JK(ao2core, loc_core_1RDM)
-                    core_energy = np.sum((core_OEI + 0.5 * core_JK) * core_1RDM)
-                    self.loc_OEH_kpts, self.loc_1RDM_kpts, self.loc_1RDM_R0 = (
-                        self.local.make_loc_1RDM(
-                            0.0, self.mask4Gamma, OEH_type=self.OEH_type, dft_HF=None
-                        )
-                    )
-                    self.loc_1RDM_R0_modified = self.loc_1RDM_R0
-                    self.loc_1RDM_R0_modified[0][
-                        : self.Nimp + self.Nbath, : self.Nimp + self.Nbath
-                    ] = RDM1
-                    self.loc_1RDM_R0_modified_ao_basis = lib.einsum(
-                        "Rim,mn,jn->Rij",
-                        self.local.ao2lo,
-                        self.loc_1RDM_R0_modified[0],
-                        self.local.ao2lo.conj()[0],
-                    ).real
-                    self.core_energy = core_energy.real
-                    self.loc_core_1RDM = loc_core_1RDM.real.reshape(
-                        1, self.Norbs, self.Norbs
-                    )
-                else:
-                    self.core_energy = 0.0
-                    self.loc_core_1RDM = 0.0
-                    E_core = 0.0  # noqa: F841
-            self.loc_corr_1RDM_R0 += self.loc_core_1RDM
-            self.nelec_per_cell = self.Nelec_total
-            if self.nevpt2_roots is not None:
-                e_CAS, e_CASCI_NEVPT2, t_dm1s = e_solver
-                self.ss_CASCI = e_CASCI_NEVPT2[:, 0]
-                e_CASCI = e_CASCI_NEVPT2[:, 1]
-                e_NEVPT2 = e_CASCI_NEVPT2[:, 2]
-                self.e_tot = e_CAS + self.core_energy + self.local.e_core
-                self.e_emb = e_CAS
-                self.e_imp = e_cell - self.local.e_core
-                self.e_casci_tot = (
-                    np.asarray(e_CASCI) + self.core_energy + self.local.e_core
-                )
-                self.e_nept2_tot = (
-                    np.asarray(e_NEVPT2) + self.core_energy + self.local.e_core
-                )
-                self.t_dm1s = t_dm1s
-            else:
-                self.e_tot = e_solver + self.core_energy + self.local.e_core
-                self.e_emb = e_solver
-                self.e_imp = e_cell - self.local.e_core
+            self._compute_gamma_energy(e_cell, e_solver, RDM1)
         else:
             self.nelec_per_cell = np.trace(RDM1[: self.Nimp, : self.Nimp])
             self.e_tot = e_cell
 
         return self.nelec_per_cell
 
-    def bath_contruction(self, loc_1RDM_R0, impCluster):
+    def _compute_gamma_energy(self, e_cell, e_solver, RDM1):
+        """
+        Compute total energy for Gamma-point DMET
+        E_total = E_solver + E_core(DMET) + E_core(Wannier)
+            E_solver = From QC solver in embedding space
+            E_core(DMET) = From frozen bath orbitals
+            E_core(Wannier) = From frozen Bloch bands (local)
+        """
+        # --- DMET core energy (unentangled bath orbitals) ---
+        if self._is_new_bath:
+            if self.core_orbs is not None and self.core_orbs.shape[-1] != 0:
+                self.core_energy, self.loc_core_1RDM = self._compute_dmet_core_energy(
+                    RDM1
+                )
+            else:
+                self.core_energy = 0.0
+                self.loc_core_1RDM = np.zeros(
+                    (1, self.Norbs, self.Norbs)
+                )  # or should be
+
+        self.loc_corr_1RDM_R0 += self.loc_core_1RDM
+        self.nelec_per_cell = self.Nelec_total
+
+        # Unpack e_solver
+        if "CASPDFT" in self.solver.name:
+            e_cas, e_pdft = e_solver
+            self.e_tot = np.asarray(e_pdft) + self.core_energy + self.local.e_core
+            self.e_cas = np.asarray(e_cas) + self.core_energy + self.local.e_core
+            self.e_emb = np.asarray(e_pdft)
+            self.e_imp = e_cell - self.local.e_core
+
+        elif self.solver.nevpt2_roots is not None:
+            e_CAS, e_CASCI_NEVPT2, t_dm1s = e_solver
+            self.e_tot = e_CAS + self.core_energy + self.local.e_core
+            self.e_emb = e_CAS
+            self.e_imp = e_cell - self.local.e_core
+            self.e_casci_tot = (
+                np.asarray(e_CASCI_NEVPT2[:, 1]) + self.core_energy + self.local.e_core
+            )
+            self.e_nevpt2_tot = (
+                np.asarray(e_CASCI_NEVPT2[:, 2]) + self.core_energy + self.local.e_core
+            )
+            self.ss_CASCI = e_CASCI_NEVPT2[:, 0]
+            self.t_dm1s = t_dm1s
+        else:
+            self.e_tot = e_solver + self.core_energy + self.local.e_core
+            self.e_emb = e_solver
+            self.e_imp = e_cell - self.local.e_core
+
+    def _compute_dmet_core_energy(self, RDM1):
+        """Compute energy contribution from DMET-frozen (unentangled) bath orbitals
+        E_core = Tr[h_core * D_core] + 0.5 * Tr[JK_core * D_core]
+        D_core is the MF 1-RDM projected onto core orbitals.
+        """
+        ao2core = self.local.get_ao2core(self.core_orbs)
+        lo2core = self.local.get_lo2core(self.core_orbs)
+        core_OEI = self.local.get_core_OEI(ao2core)
+
+        Nelec_in_core = self.Nelec_total - self.Nelec_in_emb
+        core_1RDM = self.local.get_core_mf_1RDM(
+            lo2core, Nelec_in_core, self.loc_OEH_kpts
+        )
+        loc_core_1RDM = lib.einsum(
+            "kim,mn,kjn->kij", lo2core, core_1RDM, lo2core.conj()
+        )
+        core_JK = self.local.get_core_JK(ao2core, loc_core_1RDM)
+        core_energy = np.sum((core_OEI + 0.5 * core_JK) * core_1RDM).real
+
+        # Update modified 1-RDM for post-processing
+        self.loc_OEH_kpts, self.loc_1RDM_kpts, self.loc_1RDM_R0 = (
+            self.local.make_loc_1RDM(
+                0.0,
+                self.mask4Gamma,
+                OEH_type=self.emb.OEH_type,
+                dft_HF=None,
+            )
+        )
+        Norb = self.Nimp + self.Nbath
+        self.loc_1RDM_R0_modified = self.loc_1RDM_R0.copy()
+        self.loc_1RDM_R0_modified[0][:Norb, :Norb] = RDM1
+        self.loc_1RDM_R0_modified_ao_basis = lib.einsum(
+            "Rim,mn,jn->Rij",
+            self.local.ao2lo,
+            self.loc_1RDM_R0_modified[0],
+            self.local.ao2lo.conj()[0],
+        ).real
+        # ------------------------------------------
+        loc_core_1RDM_reshaped = loc_core_1RDM.real.reshape(1, self.Norbs, self.Norbs)
+        return core_energy, loc_core_1RDM_reshaped
+
+    def bath_construction(self, loc_1RDM_R0, impCluster):
         """Get the bath orbitals"""
         emb_orbs, core_orbs, Nelec, Nbath = get_bath_using_RHF_1RDM(
             loc_1RDM_R0,
             impCluster,
             is_ROHF=self._is_ROHF,
-            num_bath=self._num_bath,
-            bath_truncation=self.bath_truncation,
+            num_bath=self.emb.num_bath,
+            bath_truncation=self.emb.bath_truncation,
         )
         self.emb_core_orbs = np.hstack([emb_orbs, core_orbs])
-        # self._num_bath is used to keep the no. of baths are the same as in the 1st cycle of SCF
-        if self._num_bath is None:
-            self._num_bath = Nbath
+
+        # Fix num_bath after first cycle
+        if self.emb.num_bath is None:
+            self.emb.num_bath = Nbath
+
         Nemb = self.Nimp + Nbath
+        Nenv = self.Norbs - Nemb
+
+        # Reshape to k-space
         emb_orbs = emb_orbs.reshape(self.Nkpts, self.local.nlo, Nemb)  # NR = Nkpts
         core_orbs = core_orbs.reshape(self.Nkpts, self.local.nlo, self.local.nlo - Nemb)
-        Nenv = self.Norbs - Nemb
-        Nelec_in_emb = Nelec
-        # This is what we need
 
-        if Nelec_in_emb > self.Nelec_total:
-            Nelec_in_emb = self.Nelec_total
-        elif self.Nelec_total - Nelec_in_emb > 2 * Nenv:
+        Nelec_in_emb = min(Nelec, self.Nelec_total)
+        if self.Nelec_total - Nelec_in_emb > 2 * Nenv:
             Nelec_in_emb = self.Nelec_total - 2 * Nenv
+
+        # Set the flag to indicate bath orbitals updated
         self._is_new_bath = True
+
         return emb_orbs, core_orbs, Nbath, Nelec_in_emb
 
     def check_exact(self, error=1.0e-6):
@@ -705,34 +560,30 @@ class pDMET:
         Do one-shot DMET, only the chemical potential is optimized
         """
 
-        tprint.print_msg(
-            "--------------------------------------------------------------------"
-        )
-
-        if self.dft_CF:
-            umat = df_hamiltonian.get_init_uvec(self.xc)
+        tprint.print_msg("-" * 60)
+        if self.emb.dft_CF:
+            umat = df_hamiltonian.get_init_uvec(self.emb.xc)
         else:
             umat = 0.0
 
         self.loc_OEH_kpts, self.loc_1RDM_kpts, self.loc_1RDM_R0 = (
             self.local.make_loc_1RDM(
-                umat, self.mask4Gamma, OEH_type=self.OEH_type, dft_HF=None
+                umat, self.mask4Gamma, OEH_type=self.emb.OEH_type, dft_HF=None
             )
         )
 
         self.emb_orbs, self.core_orbs, self.Nbath, self.Nelec_in_emb = (
-            self.bath_contruction(self.loc_1RDM_R0, self._impOrbs)
+            self.bath_construction(self.loc_1RDM_R0, self._impOrbs)
         )
 
-        solver = self.solver
-        self.solver = "HF"
-        nelec_cell = self.kernel(chempot=0.0)  # noqa: F841
-        self.solver = solver
+        self.solver.name = "HF"
+        nelec_cell = self.kernel(chempot=0.0)
 
         diff = abs(self.e_tot - self.kmf.e_tot)
         tprint.print_msg("   E(RHF)        : %12.8f" % (self.kmf.e_tot))
         tprint.print_msg("   E(RHF-DMET)   : %12.8f" % (self.e_tot))
         tprint.print_msg("   |RHF - RHF(DMET)|          : %12.8f" % (diff))
+        tprint.print_msg(" No. of electrons per cell : %12.8f" % (nelec_cell))
         if diff < error:
             tprint.print_msg("   HF-in-HF embedding is exact: True")
         else:
@@ -744,136 +595,190 @@ class pDMET:
         this function takes umat or loc_1RDM_R0 (p-DMET algorthm)
         """
 
-        tprint.print_msg("-- One-shot DMET ... starting at %s" % (tunix.current_time()))
-        if self.solver == "HF" and self.twoS == 0 and not self._is_ROHF:
-            tprint.print_msg(
-                "   Bath type: %s | QC Solver: %s" % (self.bathtype, "RHF")
-            )
-        elif (self.solver == "HF" and self.twoS != 0) or (
-            self.solver == "HF" and self._is_ROHF
-        ):
-            tprint.print_msg(
-                "   Bath type: %s | QC Solver: %s | 2S = %d"
-                % (self.bathtype, "ROHF", self.twoS)
-            )
-        elif self.solver == "RCCSD":
-            tprint.print_msg(
-                "   Bath type: %s | QC Solver: %s | 2S = %d"
-                % (self.bathtype, self.solver, self.twoS)
-            )
-        else:
-            tprint.print_msg(
-                "   Bath type: %s | QC Solver: %s | 2S = %d | Nroots: %d"
-                % (self.bathtype, self.solver, self.twoS, self.nroots)
-            )
-
-        if self.solver in [
-            "CASCI",
-            "CASSCF",
-            "CASPDFT",
-            "SS-CASSCF",
-            "SS-CASPDFT",
-            "SS-DMRG-SCF",
-            "SA-CASSCF",
-            "SA-CASPDFT",
-            "SA-DMRG-SCF",
-        ]:
-            if self.qcsolver.cas is not None:
-                tprint.print_msg("   Active space     :", self.qcsolver.cas)
-            if self.qcsolver.cas is not None:
-                tprint.print_msg("   Active space MOs :", self.qcsolver.molist)
-            if "SS-" in self.solver:
-                tprint.print_msg(
-                    "   State-specific CASSCF using state id :", self.state_specific_
-                )
-            if "SA-" in self.solver:
-                tprint.print_msg(
-                    "   State-average CASSCF with weight :", self.state_average_
-                )
+        self._print_solver_header()
 
         self._cycle = 1
         if not proj_DMET:
             self.loc_OEH_kpts, self.loc_1RDM_kpts, self.loc_1RDM_R0 = (
                 self.local.make_loc_1RDM(
-                    umat, self.mask4Gamma, OEH_type=self.OEH_type, dft_HF=self.dft_HF
+                    umat,
+                    self.mask4Gamma,
+                    OEH_type=self.emb.OEH_type,
+                    dft_HF=self.emb.dft_HF,
                 )
             )
 
         self.emb_orbs, self.core_orbs, self.Nbath, self.Nelec_in_emb = (
-            self.bath_contruction(self.loc_1RDM_R0, self._impOrbs)
+            self.bath_construction(self.loc_1RDM_R0, self._impOrbs)
         )
 
-        # Optimize the chemical potential
+        # Solve embedding
         if self._is_gamma:
-            nelec_per_cell_from_embedding = self.kernel(chempot=0.0)  # noqa: F841
+            _ = self.kernel(chempot=0.0)
         else:
             self.chempot = optimize.newton(self.nelec_cost_func, self.chempot)
             tprint.print_msg(
                 "   No. of electrons per cell : %12.8f" % (self.nelec_per_cell)
             )
 
-        if isinstance(self.e_tot, list) or isinstance(self.e_tot, np.ndarray):
-            tprint.print_msg("   Energy per cell           : %12.8f" % (self.e_tot[0]))
-            if self.state_average_ is not None:
-                for i, e in enumerate(self.e_tot):
+        self._print_energies()
+
+    def _print_solver_header(self):
+        """Solver header"""
+        tprint.print_msg("-- One-shot DMET ... starting at %s" % (tunix.current_time()))
+        extra = f" | 2S = {self.solver.twoS}"
+        if self.solver.name == "HF":
+            qc_label = "RHF" if self.solver.twoS == 0 and not self._is_ROHF else "ROHF"
+        else:
+            qc_label = self.solver.name
+
+        if self.solver.name not in ["HF", "RCCSD"]:
+            extra += f" | Nroots: {self.solver.nroots}"
+
+        # Print Bath Solver line
+        tprint.print_msg(
+            f"   Bath type: {self.bathtype} | QC Solver: {qc_label}{extra}"
+        )
+
+        required = {"CAS", "DMRG"}
+        if any(req in self.solver.name for req in required):
+            if self.solver.cas is not None:
+                tprint.print_msg("   Active space     :", self.solver.cas)
+                tprint.print_msg("   Active space MOs :", self.solver.molist)
+
+            if self.solver.name.startswith("SS-"):
+                tprint.print_msg(
+                    "   State-specific CASSCF using state id :",
+                    self.solver.state_specific_,
+                )
+
+            if self.solver.name.startswith("SA-"):
+                if self.solver.state_average_ is not None:
                     tprint.print_msg(
-                        "      State %d weight %7.5f: E = %12.8f"
-                        % (i, self.state_average_[i], e)
+                        "   State-average CASSCF with weight :",
+                        self.solver.state_average_,
+                    )
+                elif self.solver.state_average_mix_ is not None:
+                    tprint.print_msg("   State-average CASSCF with mixed Solvers :")
+                    for i, mix in enumerate(self.solver.state_average_mix_):
+                        tprint.print_msg(
+                            " Solver %d: spin %d, roots %d, weight %s"
+                            % (i, mix.spin, mix.roots, str(mix.weights))
+                        )
+            if "CASPDFT" in self.solver.name:
+                tprint.print_msg("   On-top functional:", self.solver.otxc or "tPBE")
+
+    def _print_energies(self):
+        """Generic printer function"""
+
+        name = self.solver.name
+        weights = getattr(self.solver, "state_average_", None)
+        is_pdft = "CASPDFT" in name
+
+        tprint.print_msg("-" * 60)
+        tprint.print_msg("Results")
+        tprint.print_msg("-" * 60)
+
+        if is_pdft:
+            # Always report both CASSCF and PDFT
+            if isinstance(self.e_cas, (list, np.ndarray)):
+                # SA-CASSCF: per-state CASSCF energies
+                for i, e in enumerate(self.e_cas):
+                    w = self.solver.state_average_[i]
+                    tprint.print_msg(
+                        "      State %d (w=%5.3f): E(pDMET CASSCF) = %12.8f Eh"
+                        % (i, w, e)
+                    )
+                for i, e in enumerate(self.e_tot):
+                    w = self.solver.state_average_[i]
+                    tprint.print_msg(
+                        "      State %d (w=%5.3f): E(pDMET-PDFT) = %12.8f Eh"
+                        % (i, w, e)
                     )
             else:
-                for i, e in enumerate(self.e_tot):
-                    tprint.print_msg("      State %d: E = %12.8f" % (i, e))
-        else:
-            tprint.print_msg("   Energy per cell           : %12.8f" % (self.e_tot))
+                tprint.print_msg("   E(pDMET CASSCF)    : %12.8f Eh" % self.e_cas)
+                tprint.print_msg("   E(pDMET-PDFT) : %12.8f Eh" % self.e_tot)
 
-        if self.nevpt2_roots is not None:
+        if isinstance(self.e_tot, (list, np.ndarray)) and not is_pdft:
+            # SA-CASSCF or multi-root
+            tprint.print_msg("   Energy per cell  : %12.8f Eh" % self.e_tot[0])
+            if self.solver.state_average_ is not None:
+                weights = self.solver.state_average_
+            elif self.solver.state_average_mix_ is not None:
+                weights = []
+                for solver in self.solver.state_average_mix_:
+                    weights += solver.weights
+            else:
+                weights = None
+            for i, e in enumerate(self.e_tot):
+                if weights is not None:
+                    tprint.print_msg(
+                        "      State %d (w=%5.3f): E(pDMET %s) = %12.8f Eh"
+                        % (i, weights[i], name, e)
+                    )
+                else:
+                    tprint.print_msg(
+                        "      State %d: E(pDMET %s) = %12.8f Eh" % (i, name, e)
+                    )
+
+        else:
+            # Standard scalar energy
+            tprint.print_msg(
+                "   Energy per cell E(pDMET %s) : %12.8f Eh" % (name, self.e_tot)
+            )
+
+        # NEVPT2
+
+        def ensure_flat(x):
+            """Helper function to flatten states for state_average_mix_"""
+            if x and isinstance(x[0], list):
+                return [item for sublist in x for item in sublist]
+            return x
+
+        if self.solver.nevpt2_roots is not None:
+            nevpt2_states = ensure_flat(self.solver.nevpt2_roots)
             tprint.print_msg("   NEVPT2 energies for the selected states:")
-            for i, e_nevpt2 in enumerate(self.e_nept2_tot):
+            for i, e_nevpt2 in enumerate(self.e_nevpt2_tot):
                 tprint.print_msg(
-                    "      State %d: E(CASCI) = %12.8f   E(NEVPT2) = %12.8f   <S^2> = %8.6f"
+                    "      State %d: E(pDMET CASCI) = %12.8f Eh  E(pDMET NEVPT2) = %12.8f Eh   <S^2> = %8.6f"
                     % (
-                        self.nevpt2_roots[i],
+                        nevpt2_states[i],
                         self.e_casci_tot[i],
                         e_nevpt2,
                         self.ss_CASCI[i],
                     )
                 )
 
-        tprint.print_msg(
-            "-- One-shot DMET-PDFT ... finished at %s" % (tunix.current_time())
-        )
-        tprint.print_msg()
+        tprint.print_msg("-- One-shot DMET ... finished at %s" % (tunix.current_time()))
 
     def self_consistent(self, get_band=False, interpolate_band=None):
         """
         Do self-consistent pDMET
         """
-
-        tprint.print_msg(
-            "--------------------------------------------------------------------"
-        )
+        tprint.print_msg("-" * 60)
         tprint.print_msg("- SELF-CONSISTENT DMET CALCULATION ... STARTING -")
         tprint.print_msg("  Convergence criteria")
-        tprint.print_msg("    Threshold :", self.SC_threshold)
-        tprint.print_msg("  Fitting 1-RDM of :", self.SC_CFtype)
+        tprint.print_msg("    Threshold :", self.scf.threshold)
+        tprint.print_msg("  Fitting 1-RDM of :", self.scf.CF_type)
 
-        if self.dft_CF:
-            tprint.print_msg("  DF-like cost function:", self.xc)
-        if self.damping != 1.0:
-            tprint.print_msg("  Damping factor   :", self.damping)
-        if self.DIIS:
+        if self.emb.dft_CF:
+            tprint.print_msg("  DF-like cost function:", self.emb.xc)
+        if self.scf.damping != 1.0:
+            tprint.print_msg("  Damping factor   :", self.scf.damping)
+        if self.scf.use_DIIS:
             tprint.print_msg(
                 "  DIIS start at %dth cycle and using %d previous umats"
-                % (self.DIIS_m, self.DIIS_n)
+                % (self.scf.DIIS_start, self.scf.DIIS_nvector)
             )
 
-        # ------------------------------------#
-        # ---- SELF-CONSISTENT PROCEDURE ----#
-        # ------------------------------------#
+        # ---- SELF-CONSISTENT PROCEDURE ----
         OEH_kpts, rdm1_kpts, rdm1_R0 = self.local.make_loc_1RDM(
-            self.umat, self.mask4Gamma, OEH_type=self.OEH_type, dft_HF=self.dft_HF
+            self.umat,
+            self.mask4Gamma,
+            OEH_type=self.emb.OEH_type,
+            dft_HF=self.emb.dft_HF,
         )
-        for cycle in range(self.SC_maxcycle):
+        for cycle in range(self.scf.maxcycle):
             tprint.print_msg("- CYCLE %d:" % (cycle + 1))
             umat_old = self.umat
             rdm1_R0_old = rdm1_R0
@@ -884,7 +789,7 @@ class pDMET:
             tprint.print_msg("   + Chemical potential        : %12.8f" % (self.chempot))
 
             # Optimize uvec to minimize the cost function
-            if self.dft_CF:
+            if self.emb.dft_CF:
                 result = optimize.minimize(
                     self.CF,
                     self.uvec,
@@ -898,7 +803,7 @@ class pDMET:
                 result = optimize.minimize(
                     self.CF,
                     self.uvec,
-                    method=self.SC_method,
+                    method=self.scf.method,
                     options={"disp": False, "gtol": 1e-6},
                     tol=1e-4,
                 )
@@ -921,7 +826,7 @@ class pDMET:
             rdm1_R0 = loc_1RDM_R0
 
             # Remove arbitrary chemical potential shifts
-            if not self.dft_CF:
+            if not self.emb.dft_CF:
                 self.umat = self.umat - np.eye(self.umat.shape[0]) * np.average(
                     np.diag(self.umat)
                 )
@@ -932,9 +837,11 @@ class pDMET:
             umat_diff = umat_old - self.umat
             rdm_diff = rdm1_R0_old - rdm1_R0
             energy_diff = self.e_tot - energy_old
-            if self.state_average_ is not None:
+            if self.solver.state_average_ is not None:
                 energy_diff = self.e_tot - energy_old
-                energy_diff = np.sum(energy_diff * np.asarray(self.state_average_))
+                energy_diff = np.sum(
+                    energy_diff * np.asarray(self.solver.state_average_)
+                )
             norm_u = np.linalg.norm(umat_diff)
             norm_rdm = np.linalg.norm(rdm_diff)
 
@@ -947,7 +854,7 @@ class pDMET:
             if get_band:
                 band = self.get_bands()
                 pywannier90.save_kmf(
-                    band, str(self.solver) + "_band_cyc_" + str(cycle + 1)
+                    band, str(self.solver.name) + "_band_cyc_" + str(cycle + 1)
                 )
 
             # DEBUG
@@ -956,45 +863,43 @@ class pDMET:
                 bands = self.interpolate_band(frac_kpts)  # noqa: F841
 
             # Check convergence of 1-RDM
-            if self.dft_CF:
-                if norm_rdm <= self.SC_threshold:
+            if self.emb.dft_CF:
+                if norm_rdm <= self.scf.threshold:
                     break
-            elif norm_u <= self.SC_threshold:
+            elif norm_u <= self.scf.threshold:
                 break
 
-            if self.DIIS:
+            if self.scf.use_DIIS:
                 self.umat = self._diis.update(cycle, self.umat, umat_diff)
 
-            if self.damping != 1.0:
-                self.umat = (1.0 - self.damping) * umat_old + self.damping * self.umat
+            if self.scf.damping != 1.0:
+                self.umat = (
+                    1.0 - self.scf.damping
+                ) * umat_old + self.scf.damping * self.umat
 
             self.uvec = self.umat2uvec(self.umat)
             tprint.print_msg()
 
         tprint.print_msg("- SELF-CONSISTENT DMET CALCULATION ... DONE -")
-        tprint.print_msg(
-            "--------------------------------------------------------------------"
-        )
+        tprint.print_msg("-" * 60)
 
     def projected_DMET(self, get_band=False):
         """
         Do projected DMET
         """
 
-        tprint.print_msg(
-            "--------------------------------------------------------------------"
-        )
+        tprint.print_msg("-" * 60)
         tprint.print_msg("- p-DMET CALCULATION ... STARTING -")
         tprint.print_msg("  Convergence criteria")
-        tprint.print_msg("    Threshold :", self.SC_threshold)
-        tprint.print_msg("  Fitting 1-RDM of :", self.SC_CFtype)
+        tprint.print_msg("    Threshold :", self.scf.threshold)
+        tprint.print_msg("  Fitting 1-RDM of :", self.scf.CF_type)
 
-        if self.damping != 1.0:
-            tprint.print_msg("  Damping factor   :", self.damping)
-        if self.DIIS:
+        if self.scf.damping != 1.0:
+            tprint.print_msg("  Damping factor   :", self.scf.damping)
+        if self.scf.use_DIIS:
             tprint.print_msg(
                 "  DIIS start at %dth cycle and using %d previous umats"
-                % (self.DIIS_m, self.DIIS_n)
+                % (self.scf.DIIS_start, self.scf.DIIS_nvector)
             )
 
         # ------------------------------------#
@@ -1002,11 +907,11 @@ class pDMET:
         # ------------------------------------#
         self.loc_OEH_kpts, self.loc_1RDM_kpts, self.loc_1RDM_R0 = (
             self.local.make_loc_1RDM(
-                0.0, self.mask4Gamma, OEH_type=self.OEH_type, dft_HF=self.dft_HF
+                0.0, self.mask4Gamma, OEH_type=self.emb.OEH_type, dft_HF=self.emb.dft_HF
             )
         )
         global_corr_1RDM = self.local.k_to_R(self.loc_1RDM_kpts)
-        for cycle in range(self.SC_maxcycle):
+        for cycle in range(self.scf.maxcycle):
             tprint.print_msg("- CYCLE %d:" % (cycle + 1))
             global_corr_1RDM_old = global_corr_1RDM
             self.one_shot(proj_DMET=True)
@@ -1026,22 +931,22 @@ class pDMET:
             if get_band is True:
                 band = self.get_bands()
                 pywannier90.save_kmf(
-                    band, str(self.solver) + "_band_cyc_" + str(cycle + 1)
+                    band, str(self.solver.name) + "_band_cyc_" + str(cycle + 1)
                 )
 
             # Check convergence of 1-RDM
-            if norm_1RDM <= self.SC_threshold:
+            if norm_1RDM <= self.scf.threshold:
                 break
 
-            if self.DIIS is True:
+            if self.scf.use_DIIS is True:
                 global_corr_1RDM = self._diis.update(
                     cycle, global_corr_1RDM, global_corr_1RDM_residual
                 )
 
-            if self.damping != 1.0:
+            if self.scf.damping != 1.0:
                 global_corr_1RDM = (
-                    self.damping * global_corr_1RDM
-                    + (1 - self.damping) * global_corr_1RDM_old
+                    self.scf.damping * global_corr_1RDM
+                    + (1 - self.scf.damping) * global_corr_1RDM_old
                 )
 
             # Construct new mean-field 1-RDM from the correlated one
@@ -1067,9 +972,7 @@ class pDMET:
             tprint.print_msg()
 
         tprint.print_msg("- p-DMET CALCULATION ... DONE -")
-        tprint.print_msg(
-            "--------------------------------------------------------------------"
-        )
+        tprint.print_msg("-" * 60)
 
     def nelec_cost_func(self, chempot):
         """
@@ -1121,20 +1024,20 @@ class pDMET:
         loc_OEH_kpts, loc_1RDM_kpts, loc_1RDM_R0 = self.local.make_loc_1RDM(
             self.uvec2umat(uvec),
             self.mask4Gamma,
-            OEH_type=self.OEH_type,
-            dft_HF=self.dft_HF,
+            OEH_type=self.emb.OEH_type,
+            dft_HF=self.emb.dft_HF,
         )
-        if self.SC_CFtype in ["F", "diagF"]:
+        if self.scf.CF_type in ["F", "diagF"]:
             mf_1RDM = self.local.loc_kpts_to_emb(
                 loc_1RDM_kpts, self.emb_orbs[:, :, : self.Nimp]
             )
             corr_1RDM = self.emb_corr_1RDM[: self.Nimp, : self.Nimp]
-        elif self.SC_CFtype in ["FB", "diagFB"]:
+        elif self.scf.CF_type in ["FB", "diagFB"]:
             mf_1RDM = self.local.loc_kpts_to_emb(loc_1RDM_kpts, self.emb_orbs)
             corr_1RDM = self.emb_corr_1RDM
 
         error = mf_1RDM - corr_1RDM
-        if self.SC_CFtype in ["diagF", "diagFB"]:
+        if self.scf.CF_type in ["diagF", "diagFB"]:
             error = np.diag(error)
 
         return error
@@ -1156,15 +1059,15 @@ class pDMET:
             RDM_deriv_R0 = self.local.k_to_R0(  # noqa: F841
                 RDM_deriv_kpts[:, u, :, :]
             )  # Transform RDM_deriv from k-space to the reference cell
-            if self.SC_CFtype in ["F", "diagF"]:
+            if self.scf.CF_type in ["F", "diagF"]:
                 emb_error_deriv = self.local.loc_kpts_to_emb(
                     RDM_deriv_kpts[:, u, :, :], self.emb_orbs[:, :, : self.Nimp]
                 )
-            elif self.SC_CFtype in ["FB", "diagFB"]:
+            elif self.scf.CF_type in ["FB", "diagFB"]:
                 emb_error_deriv = self.local.loc_kpts_to_emb(
                     RDM_deriv_kpts[:, u, :, :], self.emb_orbs
                 )
-            if self.SC_CFtype in ["diagF", "diagFB"]:
+            if self.scf.CF_type in ["diagF", "diagFB"]:
                 emb_error_deriv = np.diag(emb_error_deriv)
             the_gradient.append(emb_error_deriv)
 
@@ -1197,8 +1100,8 @@ class pDMET:
         loc_OEH_kpts, loc_1RDM_kpts, loc_1RDM_R0 = self.local.make_loc_1RDM(
             self.uvec2umat(uvec),
             self.mask4Gamma,
-            OEH_type=self.OEH_type,
-            dft_HF=self.dft_HF,
+            OEH_type=self.emb.OEH_type,
+            dft_HF=self.emb.dft_HF,
         )
         error = loc_1RDM_R0 - self.loc_corr_1RDM_R0
         return error
@@ -1233,9 +1136,9 @@ class pDMET:
         umat = self.uvec2umat(uvec)
 
         loc_OEH_kpts, loc_1RDM_kpts, loc_1RDM_R0 = self.local.make_loc_1RDM(
-            umat, self.mask4Gamma, OEH_type=self.OEH_type, dft_HF=self.dft_HF
+            umat, self.mask4Gamma, OEH_type=self.emb.OEH_type, dft_HF=self.emb.dft_HF
         )
-        if self.OEH_type == "FOCK":
+        if self.emb.OEH_type == "FOCK":
             OEH = self.local.loc_actFOCK_kpts  # +umat
             OEH = self.local.k_to_R(OEH)
             e_fun = np.trace(OEH.dot(loc_1RDM_R0))
@@ -1285,7 +1188,7 @@ class pDMET:
         """
         if is_gamma:
             impCluster = np.asarray(self._impOrbs)
-            if self.SC_CFtype in ["F", "FB"]:
+            if self.scf.CF_type in ["F", "FB"]:
                 mask = np.matrix(impCluster).T.dot(np.matrix(impCluster)) == 1
                 mask[np.tril_indices(self.Norbs, -1)] = False
             else:
@@ -1293,7 +1196,7 @@ class pDMET:
                 mask[impCluster == 1, impCluster == 1] = True
         else:
             mask = np.zeros([self.Nimp, self.Nimp], dtype=bool)
-            if self.SC_CFtype in ["F", "FB"]:
+            if self.scf.CF_type in ["F", "FB"]:
                 mask[np.triu_indices(self.Nimp)] = True
             else:
                 np.fill_diagonal(mask, True)
@@ -1303,7 +1206,7 @@ class pDMET:
         """
         Convert uvec to the umat which is will be added up to the local one-electron Hamiltonian at each k-point
         """
-        if self.dft_CF:
+        if self.emb.dft_CF:
             the_umat = uvec
         elif self._is_gamma:
             the_umat = np.zeros([self.Norbs, self.Norbs], dtype=np.float64)
@@ -1322,7 +1225,7 @@ class pDMET:
         """
         Convert umat to the uvec
         """
-        if self.dft_CF is True:
+        if self.emb.dft_CF is True:
             return umat
         else:
             return umat[self.mask]
@@ -1343,7 +1246,7 @@ class pDMET:
         theH1 = []
         if is_gamma is True:
             imp_indices = np.where(np.asarray(impCluster) == 1)[0]
-            if self.SC_CFtype in ["diagF", "diagFB"]:
+            if self.scf.CF_type in ["diagF", "diagFB"]:
                 for idx in imp_indices:
                     H1 = np.zeros([self.Norbs, self.Norbs])
                     H1[idx, idx] = 1
@@ -1356,7 +1259,7 @@ class pDMET:
                         H1[col, row] = 1
                         theH1.append(H1)
         else:
-            if self.SC_CFtype in ["diagF", "diagFB"]:
+            if self.scf.CF_type in ["diagF", "diagFB"]:
                 for row in range(self.Nimp):
                     H1 = np.zeros([self.Nimp, self.Nimp])
                     H1[row, row] = 1
@@ -1441,16 +1344,16 @@ class pDMET:
         if cost_func == "FB":
             CF = self.cost_func
             CF_grad = self.cost_func_grad
-            self.SC_CFtype = "FB"
+            self.scf.CF_type = "FB"
         elif cost_func == "F":
             CF = self.cost_func
             CF_grad = self.cost_func_grad
-            self.SC_CFtype = "F"
+            self.scf.CF_type = "F"
         else:
             CF = self.glob_cost_func
             CF_grad = self.glob_cost_func_grad  # noqa: F841
 
-        if self.dft_CF and self.xc == "PBE0":
+        if self.emb.dft_CF and self.emb.xc == "PBE0":
             result = optimize.minimize(
                 self.CF,
                 self.uvec,
@@ -1476,13 +1379,13 @@ class pDMET:
         else:
             tprint.print_msg("Band structure error: %12.8f" % (error))
 
-        if self.dft_CF:
+        if self.emb.dft_CF:
             eigvals, eigvecs = self.local.make_loc_1RDM_kpts(
                 self.uvec2umat(uvec),
                 self.mask4Gamma,
-                OEH_type=self.xc,
+                OEH_type=self.emb.xc,
                 get_band=True,
-                dft_HF=self.dft_HF,
+                dft_HF=self.emb.dft_HF,
             )
         else:
             eigvals, eigvecs = self.local.make_loc_1RDM_kpts(
@@ -1490,7 +1393,7 @@ class pDMET:
                 self.mask4Gamma,
                 OEH_type="FOCK",
                 get_band=True,
-                dft_HF=self.dft_HF,
+                dft_HF=self.emb.dft_HF,
             )
 
         dmet_orbs = lib.einsum(
@@ -1533,48 +1436,14 @@ class pDMET:
         OEH_kpts, eigvals, eigvecs = self.local.make_loc_1RDM_kpts(
             self.uvec2umat(self.uvec),
             self.mask4Gamma,
-            OEH_type=self.xc,
+            OEH_type=self.emb.xc,
             get_ham=True,
-            dft_HF=self.dft_HF,
+            dft_HF=self.emb.dft_HF,
         )
         eigvals, eigvecs = self.w90.interpolate_band(
             frac_kpts, OEH_kpts, use_ws_distance, ws_search_size, ws_distance_tol
         )
         return (eigvals, eigvecs)
-
-    def get_supercell_Hamiltonian(self, twoS=0):
-        """Make mf object of the effective Hamiltonian for a molecular solver."""
-
-        # 1-ERI
-        Hcore_kpts = self.local.loc_actOEI_kpts
-        Hcore = self.local.k_to_R(Hcore_kpts)
-        print("Hcore", Hcore)
-        # 2-ERI
-        TEI = self.local.get_loc_TEI()
-
-        from pyscf import gto, scf, ao2mo
-
-        mol = gto.Mole()
-        mol.build(verbose=self.verbose)
-        mol.atom.append(("He", (0, 0, 0)))
-        mol.nelectron = self.Nelec_total
-        mol.incore_anyway = True
-        mol.spin = twoS
-        mol.verbose = self.verbose
-        if mol.spin == 0:
-            mf = scf.RHF(mol)
-        else:
-            mf = scf.ROHF(mol)
-        mf.get_hcore = lambda *args: Hcore
-        mf.get_ovlp = lambda *args: np.eye(self.Norbs)
-        mf._eri = ao2mo.restore(8, TEI, self.Norbs)
-        mf.scf()
-        DMloc = np.dot(np.dot(mf.mo_coeff, np.diag(mf.mo_occ)), mf.mo_coeff.T)
-        if mf.converged is False:
-            mf.newton().kernel(dm0=DMloc)
-            DMloc = np.dot(np.dot(mf.mo_coeff, np.diag(mf.mo_occ)), mf.mo_coeff.T)
-
-        return mol, mf
 
     def plot(self, orb="emb", grid=[50, 50, 50], path="./"):
         """Plot orbitals for CAS solvers
@@ -1596,7 +1465,7 @@ class pDMET:
             mo = self.qcsolver.mo_nat
             rotate_mat = emb_orbs.dot(mo)
         elif orb == "nto":
-            assert self.nevpt2_roots is not None, (
+            assert self.solver.nevpt2_roots is not None, (
                 "NEVPT2 must be called to calculate the NTOs"
             )
             pass
@@ -1605,7 +1474,7 @@ class pDMET:
 
     def get_trans_dipole(self):
         """Calculate transition dipole"""
-        assert self.nevpt2_roots is not None, (
+        assert self.solver.nevpt2_roots is not None, (
             "NEVPT2 must be called to calculate the NTOs"
         )
         charges = self.cell.atom_charges()
