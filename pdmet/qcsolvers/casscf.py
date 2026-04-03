@@ -86,6 +86,9 @@ class CASSCFSolver(BaseCASSolver):
                 fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=solver.spin)
                 fci_solver.spin = solver.spin
                 fci_solver.nroots = solver.roots
+                fci_solver.max_cycle = (
+                    120  # Hardcoded for now, can be made a user input if needed
+                )
                 solvers.append(fci_solver)
                 weight_list += solver.weights
 
