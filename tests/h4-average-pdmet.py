@@ -6,8 +6,10 @@ from pyscf.pbc import gto, scf, df
 
 from pdmet import dmet
 from pdmet.tools import tchkfile
+from pdmet.settings import StateConfig
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
+
 
 cell = gto.Cell()
 cell.atom = """
@@ -80,19 +82,25 @@ pdmet.emb.impCluster = [1]
 pdmet.emb.impOrbs_threshold = 1.5
 pdmet.solver.twoS = 0
 pdmet.solver.cas = (4, 4)
+
+# State-average Specific + NEVPT2 example
+# pdmet.solver.nevpt2_roots = [0]
+# pdmet.solver.nevpt2_nroots = 1
+
 # State-average over 2 states with equal weights
-pdmet.solver.nevpt2_roots = list(range(0, 2))
-pdmet.solver.state_average_ = [0.5, 0.5]
-pdmet.solver.nevpt2_nroots = 2
+# weight = 1.0/3
+# pdmet.solver.nevpt2_roots = list(range(0, 3))
+# pdmet.solver.state_average_ = [weight, weight, weight]
+# pdmet.solver.nevpt2_nroots = 3
 
 # State average mixing example
-# pdmet.solver.state_average_mix_ = [
-#     StateConfig(spin=0, roots=1, weights=[0.5]),
-#     StateConfig(spin=2, roots=1, weights=[0.5]),
-# ]
-# pdmet.solver.nevpt2_roots = [[0], [0]]
-# pdmet.solver.nevpt2_nroots = [1, 1]
+pdmet.solver.state_average_mix_ = [
+    StateConfig(spin=0, roots=1, weights=[0.5]),
+    StateConfig(spin=2, roots=2, weights=[0.25, 0.25]),
+]
+pdmet.solver.nevpt2_roots = [[0], [0, 1]]
+pdmet.solver.nevpt2_nroots = [1, 2]
 
-pdmet.solver.nroots = 2
+pdmet.solver.nroots = 3
 pdmet.initialize()
 pdmet.one_shot()

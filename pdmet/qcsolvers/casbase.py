@@ -97,7 +97,8 @@ class BaseCASSolver(BaseSolver):
 
         def _fmt_det(s, cas_norb):
             """Convert '0b11' → '0011' padded to cas_norb digits."""
-            return format(int(s, 2), f"0{cas_norb}b")
+            bits = bin(int(s, 2))[2:].ljust(cas_norb, "0")
+            return bits
 
         # Sort and only take the most important determinants for display
         dominant = sorted(dominant, key=lambda x: -abs(x[0]))[:max_det]
