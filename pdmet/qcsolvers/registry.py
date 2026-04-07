@@ -7,7 +7,7 @@ from pdmet.qcsolvers.shci import SHCISolver
 from pdmet.qcsolvers.casci import CASCISolver
 from pdmet.qcsolvers.casscf import CASSCFSolver
 from pdmet.qcsolvers.caspdft import CASPDFTSolver
-# from pdmet.qcsolvers.dmrg   import DMRGSolver
+from pdmet.qcsolvers.dmrgblock2 import DMRGBlock2Solver
 
 _REGISTRY = {
     Solver.HF: {
@@ -88,6 +88,16 @@ _REGISTRY = {
         "family": "CASPDFT",
         "state": "SA",
         # "fci_solver": "CheMPS2",
+    },
+    Solver.SA_DMRG_SCF: {
+        "cls": DMRGBlock2Solver,
+        "family": "CASSCF",
+        "state": "SA",
+    },
+    Solver.SS_DMRG_SCF: {
+        "cls": DMRGBlock2Solver,
+        "family": "CASSCF",
+        "state": "SS",
     },
 }
 
