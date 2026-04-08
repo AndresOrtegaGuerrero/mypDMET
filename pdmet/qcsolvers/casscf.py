@@ -179,6 +179,11 @@ class CASSCFSolver(BaseCASSolver):
         neleca = cas_nelec - nelecb
         mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
         mc_ci.fcisolver.nroots = nevpt2_nroots
+
+        if self.settings.e_shift is not None:
+            ss = 0.5 * spin * (0.5 * spin + 1)
+            mc_ci.fix_spin_(shift=self.settings.e_shift, ss=ss)
+
         fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
         e_casci_nevpt2, t_dm1s = self._nevpt2_from_mc_ci(
