@@ -109,6 +109,14 @@ class DMRGBlock2Solver(BaseCASSolver):
         dmrg_solver.runtimeDir = solver_dir
         dmrg_solver.scratchDirectory = solver_dir
 
+        if path == "casci":
+            block_extra_keyword = [
+                "restart_dir %s" % (solver_dir + "/restart"),
+                "noreorder",
+                "singlet_embedding",
+            ]
+            dmrg_solver.block_extra_keyword = block_extra_keyword
+
         return dmrg_solver
 
     def _single_root_casscf(self, fcivec, cas_norb, e_tot):
@@ -169,7 +177,7 @@ class DMRGBlock2Solver(BaseCASSolver):
                 spin, nevpt2_nroots[i], path="casci", index=i
             )
             if nevpt2_nroots[i] > 1:
-                mc_ci.fcisolver.block_extra_keyword = ["tran_onepdm"]
+                mc_ci.fcisolver.block_extra_keyword.append("tran_onepdm")
 
             mc_ci.fcisolver.nroots = nevpt2_nroots[i]
             if self.settings.e_shift is not None:
@@ -213,8 +221,9 @@ class DMRGBlock2Solver(BaseCASSolver):
         neleca = cas_nelec - nelecb
         mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
         mc_ci.fcisolver = self._get_dmrg_solver(spin, nevpt2_nroots, path="casci")
+
         if nevpt2_nroots > 1:
-            mc_ci.fcisolver.block_extra_keyword = ["tran_onepdm"]
+            mc_ci.fcisolver.block_extra_keyword.append("tran_onepdm")
 
         if self.settings.e_shift is not None:
             ss = 0.5 * spin * (0.5 * spin + 1)
@@ -264,23 +273,44 @@ class DMRGBlock2Solver(BaseCASSolver):
             )
             t_dm1s.append(self._trans_dmrg1(mc_ci, root))
             e_casci_nevpt2.append([ss, e_cas_root, e_cas_root + e_corr])
+        self._print_ci_dmrg(mc_ci)
 
         return e_casci_nevpt2, t_dm1s
 
     def _print_ci_dmrg(self, mc_ci):
-        path = mc_ci.fcisolver.scratchDirectory
-        occ_str = "0ab2"
-        dets = np.load(path + "/node0/sample-dets.npy")
-        vals = np.load(path + "/node0/sample-vals.npy")
-        idx = np.argsort(np.abs(vals))[::-1]
+        from pyblock2.driver.core import DMRGDriver, SymmetryTypes
 
-        print(
-            "\nSum of weights of computed DET = %20.15f (cutoff = %.2g)\n"
-            % ((vals**2).sum(), self.settings.dmrg.det_cutoff)
-        )
-        for ii, ix in enumerate(idx):
-            det = "".join([occ_str[x] for x in dets[ix]])
-            print("DET %10d" % ii, det, " = %20.15f" % vals[ix])
+        path = mc_ci.fcisolver.scratchDirectory + "/restart"
+        det_cutoff = self.settings.dmrg.det_cutoff
+        driver = DMRGDriver(scratch=path, symm_type=SymmetryTypes.SU2, n_threads=1)
+        kets = driver.load_mps(tag="KET", nroots=mc_ci.fcisolver.nroots)
+
+        if mc_ci.fcisolver.nroots == 1:
+            print("\nDMRG CI coefficients:")
+            csfs, coeffs = driver.get_csf_coefficients(
+                kets, cutoff=det_cutoff, iprint=1
+            )
+        else:
+            for i in range(mc_ci.fcisolver.nroots):
+                ket = driver.split_mps(kets, iroot=i, tag="KET%d" % i)
+                print(f"\nRoot {i} DMRG CI coefficients:")
+                csfs, coeffs = driver.get_csf_coefficients(
+                    ket, cutoff=det_cutoff, iprint=1
+                )
+
+        # This should be for one root , if I am interested in sample DETs
+        # occ_str = "0ab2"
+        # dets = np.load(path + "/node0/sample-dets.npy")
+        # vals = np.load(path + "/node0/sample-vals.npy")
+        # idx = np.argsort(np.abs(vals))[::-1]
+
+        # print(
+        #     "\nSum of weights of computed DET = %20.15f (cutoff = %.2g)\n"
+        #     % ((vals**2).sum(), self.settings.dmrg.det_cutoff)
+        # )
+        # for ii, ix in enumerate(idx):
+        #     det = "".join([occ_str[x] for x in dets[ix]])
+        #     print("DET %10d" % ii, det, " = %20.15f" % vals[ix])
 
     def _trans_dmrg1(self, mc_ci, root):
         """Transition 1-RDM between ground state and excited root."""
