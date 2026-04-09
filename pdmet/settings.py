@@ -19,9 +19,12 @@ Example
 
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Union
 from enum import Enum
+from pyscf import lib
+import os
+
 
 # All Enums shoulb be defined here
 
@@ -52,7 +55,7 @@ class OEHType(str, Enum):
 class CASType(str, Enum):
     FCI = "FCI"
     CheMPS2 = "CheMPS2"
-    Block = "Block"
+    Block2 = "Block2"
 
 
 # New features could be added later in needed (Symmetry for example)
@@ -103,6 +106,28 @@ class Solver(str, Enum):
 
 
 # Settings Classes
+
+
+@dataclass
+class DMRGSettings:
+    memory: int = 4  # Memory in GB for DMRG solver
+    maxM: int = 500  # Maximum bond dimension for DMRG solver
+    tol: float = 1e-7  # DMRG convergence tolerance
+    conv_tol: float = 1e-10  # DMRG convergence tolerance for the converged check
+    BLOCKEXE: str = (
+        os.popen("which block2main").read().strip()
+    )  # Executable for Block DMRG, if using Block as the DMRG solver
+    MPIPREFIX: Optional[str] = (
+        ""  # MPI prefix for running DMRG in parallel, e.g., "mpirun -np 4"
+    )
+    nevpt2_maxM: int = 200  # Maximum bond dimension for DMRG-NEVPT2 solver
+    use_compress_nevpt2: bool = False  # Whether to use compression in DMRG-NEVPT2
+    threads: int = 1  # Number of threads for DMRG solver
+    runtime_dir: Optional[str] = field(default_factory=lambda: lib.param.TMPDIR)
+    scratch_dir: Optional[str] = field(default_factory=lambda: lib.param.TMPDIR)
+    det_cutoff: float = (
+        0.05  # Determinant cutoff for printing CI coefficients in DMRG solver
+    )
 
 
 @dataclass
@@ -196,6 +221,7 @@ class SolverSettings:
     otxc: str = (
         "tPBE"  # To use for CASPDFT (Check if we can generalize to use ftPBE and tPBE0)
     )
+    dmrg: Optional[DMRGSettings] = None  # DMRG-specific settings
 
     def validate(self):
         if self.name == Solver.RCCSD and self.twoS != 0:

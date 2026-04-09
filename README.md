@@ -32,7 +32,7 @@ make
 cd ../../..
 ```
 
-If successful you will see:
+If successful you will see (For Python 3.10):
 ```
 pdmet/lib/build/libdmet.cpython-310-x86_64-linux-gnu.so
 ```
@@ -54,6 +54,12 @@ To use this solver, you must first download, compile, and install CheMPS2 on you
 
 Once the CheMPS2 library is successfully compiled, ensure that your environment and build configuration correctly point to the CheMPS2 installation so the solver can be detected and used.
 
+Using Block2
+
+Install the latest version of block2 via (Example for MacOS with Python 3.10)
+```
+pip install block2==0.5.4rc14 --extra-index-url=https://block-hczhai.github.io/block2-preview/pypi/
+```
 # Current function
 - One-shot and self-consistent pDMET calculation
 - Computing electronic band structure
