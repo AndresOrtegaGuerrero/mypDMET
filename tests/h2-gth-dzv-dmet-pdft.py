@@ -76,6 +76,7 @@ pdmet.solver.cas = (2, 2)
 pdmet.solver.e_shift = 0.5
 pdmet.initialize()
 pdmet.one_shot()
+pdmet.plot(orb="wfs", grid=[50, 50, 50], path="./", fmt="xsf")
 
 """
 
