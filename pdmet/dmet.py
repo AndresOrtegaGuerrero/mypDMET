@@ -1445,7 +1445,7 @@ class pDMET:
         )
         return (eigvals, eigvecs)
 
-    def plot(self, orb="emb", grid=[50, 50, 50], path="./"):
+    def plot(self, orb="emb", grid=[50, 50, 50], path="./", fmt="xsf"):
         """Plot orbitals for CAS solvers
         orb = 'emb', 'mf', 'mc', 'mc_nat'
         """
@@ -1470,7 +1470,7 @@ class pDMET:
             )
             pass
 
-        tplot.plot_wf(self.w90, rotate_mat, path + "/" + orb, self.kmesh, grid)
+        tplot.plot_wf(self.w90, rotate_mat, path + "/" + orb, self.kmesh, grid, fmt=fmt)
 
     def get_trans_dipole(self):
         """Calculate transition dipole"""
