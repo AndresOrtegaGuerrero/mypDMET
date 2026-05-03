@@ -20,11 +20,115 @@ Email: Hung Q. Pham <pqh3.14@gmail.com>
 """
 
 import numpy as np
+import scipy.linalg as la
 from functools import reduce
 from pyscf.pbc.tools import pbc as pbctools
 from pyscf import lib, ao2mo
 from pyscf.pbc import scf
+from pyscf.lo import iao as _pyscf_iao
 from pdmet import helper, df, df_hamiltonian
+
+
+def _klowdin(C, S, tol=1.0e-12):
+    """Lowdin orthogonalize C[k] against S[k] at every k-point."""
+    out = np.zeros_like(C)
+    for k in range(C.shape[0]):
+        M = reduce(np.dot, (C[k].conj().T, S[k], C[k]))
+        e, v = la.eigh(M)
+        keep = e > tol
+        X = (v[:, keep] / np.sqrt(e[keep])) @ v[:, keep].conj().T
+        out[k] = C[k] @ X
+    return out
+
+
+def make_iao_pao_kbasis(
+    cell,
+    kmf=None,
+    kpts=None,
+    mo_coeff_kpts=None,
+    mo_occ_kpts=None,
+    minao="minao",
+    orth_virt=True,
+):
+    """
+    Build the k-adapted IAO + PAO transformation C_ao_lo from a PySCF cell
+    + mean-field result.
+
+    Args
+    ----
+    cell : pyscf.pbc.gto.Cell
+    kmf  : pyscf.pbc.scf object (KRHF, KROHF, ...). Optional if you pass
+           mo_coeff_kpts, mo_occ_kpts, kpts directly.
+    kpts : (Nk, 3) ndarray. Defaults to kmf.kpts.
+    mo_coeff_kpts, mo_occ_kpts : Optional overrides; default to kmf's.
+    minao : B2 reference basis (default 'minao'). Match it to your ECP/PP.
+    orth_virt : Lowdin-orthogonalize the PAO virtuals after projection.
+
+    Returns
+    -------
+    C_ao_lo : (Nk, nB1, nB1) complex ndarray   — full IAO + PAO basis
+    C_val   : (Nk, nB1, nval) complex ndarray  — IAO valence
+    C_virt  : (Nk, nB1, nvirt) complex ndarray — PAO virtual
+    labels  : list[str] of length nB1          — AO labels (val first)
+    """
+    if kmf is not None:
+        if kpts is None:
+            kpts = kmf.kpts
+        if mo_coeff_kpts is None:
+            mo_coeff_kpts = kmf.mo_coeff_kpts
+        if mo_occ_kpts is None:
+            mo_occ_kpts = kmf.mo_occ_kpts
+    if kpts is None or mo_coeff_kpts is None or mo_occ_kpts is None:
+        raise ValueError("Need kmf or (kpts, mo_coeff_kpts, mo_occ_kpts).")
+
+    nkpts = len(kpts)
+
+    # Occupied MOs at each k. ROHF: singly+doubly occupied -> mo_occ > 0
+    orbocc = [
+        np.asarray(mo_coeff_kpts[k])[:, np.asarray(mo_occ_kpts[k]) > 0]
+        for k in range(nkpts)
+    ]
+
+    # AO overlap S(k) and non-orthogonal IAOs
+    S = np.asarray(cell.pbc_intor("int1e_ovlp", hermi=1, kpts=kpts))
+    C_val = np.asarray(
+        _pyscf_iao.iao(cell, orbocc, minao=minao, kpts=kpts),
+        dtype=np.complex128,
+    )
+
+    # Lowdin-orthogonalize IAOs at each k.
+    C_val = _klowdin(C_val, S)
+
+    #  PAOs: the AO shadow on the wall built by IAOs
+    # P_iao(k) = C_val(k) C_val^H(k) S(k) is the IAO projector
+    # Take (I − P_iao) and keep only the columns whose AO label is NOT in B2
+    pmol = _pyscf_iao.reference_mol(cell, minao)
+    B1_labels = cell.ao_labels()
+    B2_labels = pmol.ao_labels()
+    virt_idx = np.array(
+        [i for i, lbl in enumerate(B1_labels) if lbl not in B2_labels],
+        dtype=int,
+    )
+    nB1 = len(B1_labels)
+    nval = len(B2_labels)
+    nvirt = len(virt_idx)
+    assert nval + nvirt == nB1, (
+        f"IAO/PAO partition mismatch: |B1|={nB1}, |B2|={nval}, |B1\\B2|={nvirt}"
+    )
+
+    C_virt = np.zeros((nkpts, nB1, nvirt), dtype=np.complex128)
+    Id = np.eye(nB1)
+    for k in range(nkpts):
+        P_iao_S = C_val[k] @ C_val[k].conj().T @ S[k]
+        C_virt[k] = (Id - P_iao_S)[:, virt_idx]
+
+    if orth_virt:
+        C_virt = _klowdin(C_virt, S)
+
+    # Stack [val | virt]  →  C_ao_lo of shape (Nk, nB1, nB1).
+    C_ao_lo = np.concatenate([C_val, C_virt], axis=-1).astype(np.complex128)
+    labels = list(B2_labels) + [B1_labels[i] for i in virt_idx]
+    return C_ao_lo, C_val, C_virt, labels
 
 
 class Local:
@@ -605,6 +709,30 @@ class Local:
 
         ao2lo = np.asarray(ao2lo, dtype=np.complex128)
         return ao2lo
+
+    def get_ao2lo_iao(
+        self,
+        minao="minao",
+        orth_virt=True,
+        full_return=False,
+        mo_coeff_kpts=None,
+        mo_occ_kpts=None,
+    ):
+        """
+        Build the k-adapted IAO + PAO transformation C_ao_lo
+        """
+        C_ao_lo, C_val, C_virt, labels = make_iao_pao_kbasis(
+            self.cell,
+            kmf=self.kmf,
+            kpts=self.kpts,
+            mo_coeff_kpts=mo_coeff_kpts,
+            mo_occ_kpts=mo_occ_kpts,
+            minao=minao,
+            orth_virt=orth_virt,
+        )
+        if full_return:
+            return C_ao_lo, C_val, C_virt, labels
+        return C_ao_lo
 
     def get_ao2eo(self, emb_orbs):
         """
