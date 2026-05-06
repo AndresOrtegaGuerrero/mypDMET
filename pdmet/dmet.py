@@ -18,6 +18,7 @@ limitations under the License.
 
 """
 
+import os
 import numpy as np
 from pyscf import lib
 from scipy import optimize
@@ -25,8 +26,14 @@ from pdmet import localbasis, diis, df_hamiltonian
 from pdmet.schmidtbasis import get_bath_using_RHF_1RDM
 from pdmet.tools import tchkfile, tplot, tprint, tunix, misc
 from pdmet.lib import libdmet
-from pdmet.settings import EmbeddingSettings, SolverSettings, SCFSettings
-
+from pdmet.settings import (
+    EmbeddingSettings,
+    SolverSettings,
+    SCFSettings,
+    LocalBasisSettings,
+    LOMethod,
+)
+from pyscf.pbc.tools.k2gamma import kpts_to_kmesh
 import pywannier90
 
 
@@ -35,7 +42,8 @@ class pDMET:
         self,
         cell,
         kmf,
-        w90,
+        w90=None,
+        lo_method="wannier",
         solver="HF",
         state_average_mix_=None,
         nevpt2_spin=None,
@@ -46,12 +54,9 @@ class pDMET:
         Args:
             cell                           : a pyscf Cell object
             kmf                            : a rhf wave function from pyscf/pbc
+            lo_method                       : method to construct local orbitals. Currently supports "wannier" and "iao+pao"
             w90                            : a converged pywannier90 object
             solver                         : name of the quantum chemistry solver for the impurity problem.
-            umat                            : correlation potential
-            chempot                         : global chemical potential
-            emb_corr_1RDM                   : correlated 1RDM from high-level calculations
-            emb_orbs                        : a list of the fragment and bath orbitals for each fragment
         Return:
 
         """
@@ -62,7 +67,9 @@ class pDMET:
         self.kmf = kmf
         self.w90 = w90
         self.kmf_chkfile = None
-        self.w90_chkfile = None
+
+        # Mesh
+        self.kmesh = tuple(kpts_to_kmesh(self.cell, self.kmf.kpts))
 
         # Self consistency options
         self.scf = SCFSettings()
@@ -76,6 +83,8 @@ class pDMET:
             verbose=verbose,
             max_memory=max_memory,
         )
+        # Local basis options
+        self.lobasis = LocalBasisSettings(method=lo_method, w90=w90)
 
         # DMET Output
         self.verbose = verbose
@@ -115,9 +124,8 @@ class pDMET:
         tprint.print_msg("Initializing ... DONE")
 
     def _load_checkfiles(self):
-        """Load saved kmf/w90 object if checkfiles are set"""
+        """Load the saved kmf object if a chkfile is set."""
         assert (self.chkfile is None) or isinstance(self.chkfile, str)
-        self.kmesh = self.w90.mp_grid_loc
         if self.kmf_chkfile is not None and hasattr(self.kmf.with_df, "_cderi"):
             self.kmf = tchkfile.load_kmf(
                 self.cell,
@@ -133,8 +141,6 @@ class pDMET:
                     print(
                         "WARNING: Provide density fitting file in initiating kmf object or make sure the saved kmf object is using the same density fitting"
                     )
-        if self.w90_chkfile is not None:
-            self.w90 = tchkfile.load_w90(self.w90, self.w90_chkfile)
 
         if self.kmf.exxdiv is not None:
             raise Exception(
@@ -177,7 +183,7 @@ class pDMET:
         self.Nkpts = self.kpts.shape[0]
 
         self.local = localbasis.Local(
-            self.cell, self.kmf, self.w90, self._is_ROHF, self.emb.xc_omega
+            self.cell, self.kmf, self.lobasis, self._is_ROHF, self.emb.xc_omega
         )
         self.e_core = self.local.e_core
 
@@ -193,19 +199,31 @@ class pDMET:
                 "impCluster is used only for a Gamma-point sampling calculation"
             )
 
-            self._impOrbs, self._impAtms = misc.make_imp_orbs(
-                self.cell,
-                self.w90,
-                self.emb.impCluster,
-                threshold=self.emb.impOrbs_threshold,
-                rm_list=self.emb.impOrbs_rmlist,
-                add_list=self.emb.impOrbs_addlist,
-            )
+            if self.lobasis.method == LOMethod.WANNIER:
+                self._impOrbs, self._impAtms = misc.make_imp_orbs(
+                    self.cell,
+                    self.local.w90,
+                    self.emb.impCluster,
+                    threshold=self.emb.impOrbs_threshold,
+                    rm_list=self.emb.impOrbs_rmlist,
+                    add_list=self.emb.impOrbs_addlist,
+                )
+            # For IAO+PAO, orbitals centered in the impurity cluster no distance
+            else:
+                self._impOrbs, self._impAtms = misc.make_imp_orbs_from_labels(
+                    self.cell,
+                    self.local.lo_labels,
+                    self.emb.impCluster,
+                    orbital_filter=self.emb.imp_orbital_filter,
+                    rm_list=self.emb.impOrbs_rmlist,
+                    add_list=self.emb.impOrbs_addlist,
+                )
 
             self.Nimp = np.sum(self._impOrbs)
             self._is_gamma = True
 
             self._print_impurity_cluster()
+            self._print_lo_labels()
 
         else:
             self.Nimp = self.local.nlo
@@ -218,6 +236,7 @@ class pDMET:
             )
 
     def _print_impurity_cluster(self):
+        tprint.print_msg(f"==== Local-orbital basis ({self.lobasis.method}) ====")
         tprint.print_msg("==== Impurity cluster ====")
         tprint.print_msg(f" No. of Impurity atoms   : {len(self.emb.impCluster)}")
         tprint.print_msg(f" No. of Impurity orbitals: {self.Nimp}")
@@ -240,6 +259,44 @@ class pDMET:
             )
 
         tprint.print_msg("==========================")
+
+    def _rotate_mat_nto(self):
+        """Rotation matrix for NTOs (NEVPT2 must have been run)."""
+        assert self.solver.nevpt2_roots is not None, (
+            "NEVPT2 must be called to calculate the NTOs"
+        )
+        raise NotImplementedError("NTO plotting is not implemented yet")
+
+    def _print_lo_labels(self):
+        """Pretty-print the local-orbital basis and the impurity selection.
+
+        Only prints when string labels are available (IAO+PAO path); the
+        Wannier path stores rotation matrices, not human-readable labels.
+        """
+        labels = self.local.lo_labels
+        if labels is None:
+            return
+
+        imp_mask = (
+            np.asarray(self._impOrbs).astype(bool)
+            if self._impOrbs is not None
+            else np.zeros(len(labels), dtype=bool)
+        )
+
+        nlo = len(labels)
+        n_imp = int(imp_mask.sum())
+        selected = [lbl for lbl, m in zip(labels, imp_mask) if m]
+
+        tprint.print_msg("==== Local-orbital basis (IAO+PAO) ====")
+        tprint.print_msg(
+            f" Total LOs : {nlo}   |   Impurity : {n_imp}   |   Env : {nlo - n_imp}"
+        )
+        tprint.print_msg(f" {'sel':>3}  {'idx':>3}  label")
+        for i, lbl in enumerate(labels):
+            tag = " * " if imp_mask[i] else "   "
+            tprint.print_msg(f" {tag}  {i:>3d}  {lbl}")
+        tprint.print_msg(f" Selected as impurity: {selected}")
+        tprint.print_msg("=======================================")
 
     def _initialize_embedding_settings(self):
         """Initialize the embedding settings."""
@@ -1302,7 +1359,6 @@ class pDMET:
         loc_actFOCK_kpts = self.local.loc_actFOCK_kpts + self.uvec2umat(uvec)
         Norb = loc_actFOCK_kpts.shape[-1]
         for kpt in range(self.Nkpts):
-            # rdm_deriv = libdmet.rhf_response_c(Norb, self.Nterms, self.numPairs, self.H1start, self.H1row, self.H1col, loc_actFOCK_kpts[kpt])
             rdm_deriv = libdmet.rhf_response(
                 Norb,
                 self.Nterms,
@@ -1445,32 +1501,89 @@ class pDMET:
         )
         return (eigvals, eigvecs)
 
+    def save_lo(self, chkfile):
+        """Cache the IAO+PAO transformation to disk.
+
+        Call AFTER ``initialize()`` — the LO basis must already be built.
+        Only meaningful for the IAO+PAO path; for Wannier use
+        ``tchkfile.save_w90(self.w90, chkfile)`` instead.
+
+        Example
+        -------
+        >>> pdmet_obj.initialize()              # build IAO+PAO
+        >>> pdmet_obj.save_lo("iao_pao.chk")    # cache it for next run
+        """
+        assert getattr(self, "local", None) is not None, (
+            "save_lo() requires Local to be built — call initialize() first"
+        )
+        assert self.lobasis.method != LOMethod.WANNIER, (
+            "save_lo is for IAO+PAO; use save_w90 for the Wannier path"
+        )
+        tchkfile.save_lo_iao(self.local, chkfile)
+
+    def load_lo(self, chkfile):
+        """Mark a chkfile to be read by Local during initialize().
+
+        Call BEFORE ``initialize()``. Equivalent to setting
+        ``self.lobasis.lo_chkfile`` directly — the method exists for
+        API symmetry with ``save_lo``.
+
+        Example
+        -------
+        >>> pdmet_obj = dmet.pDMET(cell, kmf, lo_method="iao+pao")
+        >>> pdmet_obj.load_lo("iao_pao.chk")    # mark for load
+        >>> pdmet_obj.initialize()               # Local sees lo_chkfile, skips build
+        """
+        self.lobasis.lo_chkfile = chkfile
+
     def plot(self, orb="emb", grid=[50, 50, 50], path="./", fmt="xsf"):
-        """Plot orbitals for CAS solvers
-        orb = 'emb', 'mf', 'mc', 'mc_nat'
+        """Plot orbitals on a real-space grid.
+
+        Parameters
+        ----------
+        orb : str
+            Which set of orbitals to plot:
+              - "lo"  / "wfs" : raw local orbitals (Wannier or IAO+PAO)
+              - "emb"         : DMET embedding orbitals (impurity + bath)
+              - "mf"          : embedded mean-field MOs
+              - "mc"          : CASSCF MOs
+              - "nat"         : CASSCF natural orbitals
+              - "nto"         : NTOs (requires NEVPT2)
         """
 
-        emb_orbs = self.emb_orbs[0]
-        if orb == "wfs":
-            rotate_mat = None
-        if orb == "emb":
-            rotate_mat = emb_orbs
-        elif orb == "mf":
-            mo = self.qcsolver.mf.mo_coeff
-            rotate_mat = emb_orbs.dot(mo)
-        elif orb == "mc":
-            mo = self.qcsolver.mo
-            rotate_mat = emb_orbs.dot(mo)
-        elif orb == "nat":
-            mo = self.qcsolver.mo_nat
-            rotate_mat = emb_orbs.dot(mo)
-        elif orb == "nto":
-            assert self.solver.nevpt2_roots is not None, (
-                "NEVPT2 must be called to calculate the NTOs"
+        # Each handler returns the rotation matrix that mixes LOs into the
+        # requested set; None ⇒ plot LOs themselves. Lambdas defer every
+        # attribute lookup so e.g. orb="lo" works before one_shot() has
+        # built emb_orbs / qcsolver.
+        def _emb():  # bath+impurity orbitals from Schmidt decomposition
+            assert self.emb_orbs is not None, (
+                "emb_orbs not built yet — call one_shot() before plotting MO-based sets."
             )
-            pass
+            return self.emb_orbs[0]
 
-        tplot.plot_wf(self.w90, rotate_mat, path + "/" + orb, self.kmesh, grid, fmt=fmt)
+        handlers = {
+            "lo": lambda: None,
+            "wfs": lambda: None,  # alias
+            "emb": _emb,
+            "mf": lambda: _emb().dot(self.qcsolver.mf.mo_coeff),
+            "mc": lambda: _emb().dot(self.qcsolver.mo),
+            "nat": lambda: _emb().dot(self.qcsolver.mo_nat),
+            "nto": self._rotate_mat_nto,
+        }
+        if orb not in handlers:
+            raise ValueError(f"Unknown orb={orb!r}. Choose from: {tuple(handlers)}.")
+        rotate_mat = handlers[orb]()
+
+        outfile = os.path.join(path, orb)
+        tprint.print_msg(f"-- Plotting '{orb}' orbitals -> {outfile}-*.{fmt}")
+        tplot.plot_wf(
+            self.local,
+            rotate_mat,
+            outfile,
+            supercell=self.kmesh,
+            grid=grid,
+            fmt=fmt,
+        )
 
     def get_trans_dipole(self):
         """Calculate transition dipole"""

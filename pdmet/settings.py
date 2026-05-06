@@ -58,24 +58,9 @@ class CASType(str, Enum):
     Block2 = "Block2"
 
 
-# New features could be added later in needed (Symmetry for example)
-@dataclass
-class StateConfig:
-    spin: int
-    roots: int
-    weights: Union[float, List[float]]
-
-    def __post_init__(self):
-        if isinstance(self.weights, float):
-            self.weights = [self.weights] * self.roots
-        elif isinstance(self.weights, list):
-            if len(self.weights) != self.roots:
-                raise ValueError("Length of weights should match the number of roots")
-        else:
-            raise ValueError("Weights should be either a float or a list of floats")
-
-    def total_weight(self):
-        return sum(self.weights)
+class LOMethod(str, Enum):
+    WANNIER = "wannier"
+    IAO_PAO = "iao+pao"
 
 
 class Solver(str, Enum):
@@ -106,6 +91,82 @@ class Solver(str, Enum):
 
 
 # Settings Classes
+
+
+@dataclass
+class LocalBasisSettings:
+    """
+    Settings for the local-orbital basis used by the embedding.
+
+    method      : which LO construction to use ("wannier" or "iao+pao")
+    kmesh       : (3,) tuple of ints. Always required (single source of truth).
+                  For Wannier, must equal w90.mp_grid_loc.
+    w90         : pyWannier90 object. Required if method == "wannier".
+    minao       : reference basis for IAO valence (IAO+PAO only).
+                  Either a built-in name string ("gth-szv-molopt-sr", ...)
+                  or a per-element dict matching ``cell.basis`` style:
+                  ``{"Er": gto.basis.parse(er_szv_str), "Mo": "gth-szv-molopt-sr", ...}``
+                  Use the dict form when one of your elements has no
+                  built-in minimal-valence basis registered in PySCF.
+    orth_virt   : Lowdin-orthogonalize PAO virtuals at every k (IAO+PAO only)
+    w90_chkfile : optional path to a Wannier-90 chkfile.
+    lo_chkfile  : optional path to a saved IAO+PAO chkfile
+
+    allow_smearing  : if True, IAO uses density-weighted projection and
+                      get_occ_rhf uses Fermi-Dirac smearing
+    smearing_sigma  : Hartree, used when allow_smearing is True
+    nocc            : optional explicit occupation count (overrides mo_occ
+                      threshold). float or array (spin, nkpts).
+    frozen_core_per_atom : dict[str, int], e.g. {"Ni": 5} freezes 1s2s2p3s3p
+                          on every Ni atom. None means no freezing.
+    """
+
+    method: LOMethod = LOMethod.WANNIER
+    w90: Optional[object] = None
+    minao: Union[str, dict] = "minao"
+    orth_virt: bool = True
+    w90_chkfile: Optional[str] = None
+    lo_chkfile: Optional[str] = None
+
+    # Placeholder
+    # until the smearing path is implemented
+    allow_smearing: bool = False
+    smearing_sigma: Optional[float] = None
+    nocc: Optional[Union[float, list]] = None
+    frozen_core_per_atom: Optional[dict] = None
+
+    def validate(self):
+        if self.method == LOMethod.WANNIER:
+            if self.w90 is None:
+                raise ValueError("Wannier method requires w90.")
+            if self.lo_chkfile is not None:
+                raise ValueError("lo_chkfile is for IAO+PAO method only.")
+
+        else:
+            if self.w90_chkfile is not None:
+                raise ValueError("w90_chkfile is for Wannier method only.")
+        # To be implemented
+        if self.allow_smearing or self.frozen_core_per_atom is not None:
+            raise NotImplementedError("Smearing / frozen-core comming soon.")
+
+
+@dataclass
+class StateConfig:
+    spin: int
+    roots: int
+    weights: Union[float, List[float]]
+
+    def __post_init__(self):
+        if isinstance(self.weights, float):
+            self.weights = [self.weights] * self.roots
+        elif isinstance(self.weights, list):
+            if len(self.weights) != self.roots:
+                raise ValueError("Length of weights should match the number of roots")
+        else:
+            raise ValueError("Weights should be either a float or a list of floats")
+
+    def total_weight(self):
+        return sum(self.weights)
 
 
 @dataclass
@@ -166,6 +227,10 @@ class EmbeddingSettings:
     impOrbs_threshold : float - Threhold for selecting close-distance in Angstrom impurity orbitals for impCluster
     impOrbs_rmlist     : list[int]  — 1-based orbital indices to be removed from the impurity space, None
     impOrbs_addlist    : list[int]  — 1-based orbital indices to be added to the impurity space, None
+    imp_orbital_filter: Optional[dict] = None  Restrict the impurity to specific orbital shells per atom.
+        Examples:
+            {"Ni": ["3d"], "O": ["2p"]}        # by element
+            {1: ["3d"], 2: ["2p"]}             # by atom index
     num_bath :  int -  Used to keep the no. of baths are the same as in the 1st cycle of SCF
     bath_truncation : bool  -Whether to use bath_truncatio or not.
     use_GDF : bool - Whether to use GDF for ERI transformation.
@@ -181,6 +246,7 @@ class EmbeddingSettings:
     impOrbs_threshold: float = 1.0
     impOrbs_rmlist: Optional[list] = None
     impOrbs_addlist: Optional[list] = None
+    imp_orbital_filter: Optional[dict] = None
     num_bath: Optional[int] = None
     bath_truncation: bool = True
     use_GDF: bool = True

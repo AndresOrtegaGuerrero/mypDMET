@@ -35,7 +35,7 @@ def run_checks(label, cell, kmf, C_ao_lo, C_val, C_virt):
 
     # KRHF / KROHF return DIFFERENT shapes from make_rdm1():
     #   KRHF  -> (Nk, nao, nao)              total density
-    #   KROHF -> (2, Nk, nao, nao)           alpha and beta separately
+    #   KROHF -> (2, Nk, nao, nao)           alpha and beta
     is_rohf = isinstance(kmf, scf.krohf.KROHF) or getattr(kmf, "_is_ROHF", False)
 
     S = np.asarray(cell.pbc_intor("int1e_ovlp", hermi=1, kpts=kpts))
@@ -72,18 +72,15 @@ def run_checks(label, cell, kmf, C_ao_lo, C_val, C_virt):
         n_lo += np.trace(D_lo_k).real
     n_lo /= nkpts
 
-    # dimensions
     nlo = C_ao_lo.shape[-1]
     nval = C_val.shape[-1]
     nvirt = C_virt.shape[-1]
 
-    # (e) Completeness: C_ao_lo spans EVERY MO (occupied and virtual).
+    # (e) Completeness: C_ao_lo spans EVERY MO (occupied and virtual)
     # Define the MO-to-LO unitary at each k:
     #     U(k) = C_ao_lo(k)^H · S(k) · C_mo(k)        shape (nao, nmo)
     # Then |psi_m^k> = sum_i U_im(k) |w_i^k>. If C_ao_lo really is a complete
-    # orthonormal basis of the AO space, U is unitary: U^H U = I_nmo.
-    # (When nmo == nao this is "fully unitary"; when nmo < nao due to
-    # linear-dependency dropping, U^H U is still the identity on the MO side.)
+    # orthonormal basis of the AO space, U is unitary: U^H U = I_nmo
     err5 = 0.0
     for k in range(nkpts):
         U = C_ao_lo[k].conj().T @ S[k] @ kmf.mo_coeff_kpts[k]
@@ -136,9 +133,6 @@ def run_one(spin, label, outdir):
     kmf.kernel()
     print(f"  SCF energy = {kmf.e_tot:.6f}")
 
-    # The IAO reference basis (B2). gth-szv-molopt-sr is a minimal-valence
-    # basis matched to the GTH PP — the right "minao" for pseudopotential
-    # calculations (libdmet warns when 'minao' is used with ECP/PP).
     C_ao_lo, C_val, C_virt, lo_labels = make_iao_pao_kbasis(
         cell, kmf=kmf, minao="gth-szv-molopt-sr"
     )
