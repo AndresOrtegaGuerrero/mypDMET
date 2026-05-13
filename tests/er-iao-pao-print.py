@@ -104,7 +104,7 @@ def main():
     print(f"\nKROHF energy = {kmf.e_tot:.8f}\n")
 
     tchkfile.save_kmf(kmf, "temp_chk_HF_er")
-    kmf = tchkfile.load_kmf(cell, kmf, kpts, "temp_chk_HF_er")
+    kmf = tchkfile.load_kmf(kmf, "temp_chk_HF_er")
 
     minao_dict = {
         "Er": gto.basis.parse(er_minao_szv),

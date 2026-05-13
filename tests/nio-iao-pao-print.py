@@ -73,7 +73,7 @@ def main():
     print(f"\nKRHF energy = {khf.e_tot:.8f}\n")
 
     tchkfile.save_kmf(khf, chk_file)
-    kmf = tchkfile.load_kmf(cell, khf, kmesh, chk_file)
+    kmf = tchkfile.load_kmf(khf, chk_file)
 
     # ---- pDMET driver with IAO+PAO basis ------------------------------
     pdmet_obj = dmet.pDMET(

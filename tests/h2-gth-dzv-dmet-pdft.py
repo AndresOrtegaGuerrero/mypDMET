@@ -46,7 +46,7 @@ tchkfile.save_kmf(khf, "chk_HF")
 """================================"""
 """ Contruct MLWFs """
 """================================"""
-kmf = tchkfile.load_kmf(cell, khf, kmesh, "chk_HF")
+kmf = tchkfile.load_kmf(khf, "chk_HF")
 num_wann = cell.nao
 keywords = """
 num_iter = 5000
@@ -59,7 +59,7 @@ guiding_centres = .true.
 w90 = pywannier90.W90(kmf, cell, kmesh, num_wann, other_keywords=keywords)
 w90.kernel()
 
-kmf = tchkfile.load_kmf(cell, khf, kmesh, "chk_HF")
+kmf = tchkfile.load_kmf(khf, "chk_HF")
 """================================"""
 """ Run DMET """
 """================================"""
