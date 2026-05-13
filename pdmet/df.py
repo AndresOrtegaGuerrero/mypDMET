@@ -136,7 +136,7 @@ def get_emb_Lmn(
     ao2eo,
     feri=None,
     kscaled_center=None,
-    max_memory=2000,
+    max_memory=None,
     kconserv_tol=1e-12,
 ):
     nao = cell.nao_nr()
@@ -145,6 +145,9 @@ def get_emb_Lmn(
 
     if mydf._cderi is None and feri is not None:
         mydf._cderi = feri
+
+    if max_memory is None:
+        max_memory = getattr(cell, "max_memory", 4000)
 
     ao2eo = ao2eo[np.newaxis, ...]
 
