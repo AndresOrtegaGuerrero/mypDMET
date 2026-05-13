@@ -447,7 +447,7 @@ class Local:
         # 1e integral for the active part
         self.actOEI_kpts = full_OEI_k + coreJK_kpts
 
-        self.fullfock_kpts = kmf.get_fock()
+        self.fullfock_kpts = kmf.get_fock(s1e=kmf.get_ovlp())
         self.loc_actFOCK_kpts = self.ao_2_loc(self.fullfock_kpts, self.ao2lo)
 
         # DF-like DMET

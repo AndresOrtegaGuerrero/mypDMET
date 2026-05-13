@@ -142,8 +142,11 @@ def load_kmf(kmf, chkfile, max_memory=4000, gpu=None):
             self.mo_occ_kpts = saved["mo_occ_kpts"]
             self.mo_energy_kpts = saved["mo_energy_kpts"]
             self.mo_coeff_kpts = saved["mo_coeff_kpts"]
-            self.get_fock = lambda *arg: saved["get_fock"]
-            self.make_rdm1 = lambda *arg: saved["make_rdm1"]
+
+            _fock = saved["get_fock"]
+            _dm = saved["make_rdm1"]
+            self.get_fock = lambda *a, **kw: _fock
+            self.make_rdm1 = lambda *a, **kw: _dm
 
             self.eig = _bridge(kmf.eig, gpu)
             self.get_ovlp = _bridge(kmf.get_ovlp, gpu)
