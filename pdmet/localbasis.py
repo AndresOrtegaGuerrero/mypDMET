@@ -357,6 +357,10 @@ class Local:
         self.Nkpts = kmf.kpts.shape[0]
         self.nao = cell.nao_nr()
 
+        self.mo_coeff_kpts = [to_numpy(c) for c in kmf.mo_coeff_kpts]
+        self.mo_occ_kpts = [to_numpy(o) for o in kmf.mo_occ_kpts]
+        self.mo_energy_kpts = [to_numpy(e) for e in kmf.mo_energy_kpts]
+
         _, self.phase = self.get_phase(self.cell, self.kpts, self.kmesh)
 
         if lobasis.method == LOMethod.WANNIER:
@@ -392,7 +396,7 @@ class Local:
             self.nelec = [self.cell.nelec[0], self.cell.nelec[1]]
 
         self.nelec_total = 0
-        for kpt, mo_occ in enumerate(kmf.mo_occ_kpts):
+        for kpt, mo_occ in enumerate(self.mo_occ_kpts):
             active = self._get_active_mo_indices(kpt, len(mo_occ))
             self.nelec_total += int(np.asarray(mo_occ)[active].sum())
 
@@ -400,14 +404,14 @@ class Local:
 
         full_OEI_k = kmf.get_hcore()
         coreDM_kpts = []
-        for kpt, mo_coeff in enumerate(kmf.mo_coeff_kpts):
+        for kpt, mo_coeff in enumerate(self.mo_coeff_kpts):
             core_band = self._get_core_band_mask(mo_coeff, kpt)
 
             if not np.any(core_band):
                 nao = mo_coeff.shape[0]
                 coreDM_kpts.append(np.zeros((nao, nao), dtype=np.complex128))
             else:
-                coreDMmo = kmf.mo_occ_kpts[kpt][core_band].copy()
+                coreDMmo = self.mo_occ_kpts[kpt][core_band].copy()
                 mo_k = mo_coeff[:, core_band]
                 coreDMao = reduce(np.dot, (mo_k, np.diag(coreDMmo), mo_k.T.conj()))
                 coreDM_kpts.append(coreDMao)
