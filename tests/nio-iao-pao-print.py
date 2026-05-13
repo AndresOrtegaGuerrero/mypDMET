@@ -17,7 +17,6 @@ from pyscf.pbc import gto, scf, df
 from pdmet import dmet
 from pdmet.tools import tchkfile
 
-
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 
 
@@ -81,13 +80,19 @@ def main():
         kmf,
         w90=None,
         lo_method="iao+pao",
-        solver="HF",
+        solver="CASSCF",
     )
-    pdmet_obj.lobasis.minao = "gth-dzvp"  # IAO reference (minimal)
+    pdmet_obj.lobasis.minao = {
+        "Ni": "gth-szv-molopt-sr",
+        "O": "gth-szv",
+    }  # IAO reference (minimal)
     pdmet_obj.emb.impCluster = [1]  # Ni atom (1-indexed)
     pdmet_obj.emb.imp_orbital_filter = {"Ni": ["3d"]}  # only Ni 3d as impurity
+    pdmet_obj.solver.twoS = 0
+    pdmet_obj.solver.cas = (2, 2)
     pdmet_obj.initialize()
 
+    pdmet_obj.one_shot()
     out_dir = os.path.join(here, "nio_lo_xsf")
     os.makedirs(out_dir, exist_ok=True)
     pdmet_obj.plot(orb="lo", grid=[40, 40, 40], path=out_dir, fmt="xsf")
