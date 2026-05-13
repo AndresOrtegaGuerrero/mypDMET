@@ -31,6 +31,7 @@ from pdmet import helper, df, df_hamiltonian
 from pyscf.pbc.tools.k2gamma import kpts_to_kmesh
 from pdmet.tools import tchkfile
 from pdmet.settings import LOMethod
+from pdmet.tools.tchkfile import to_numpy
 
 
 def _klowdin(C, S, tol=1.0e-12):
@@ -234,6 +235,8 @@ def make_iao_pao_kbasis(
     if kpts is None or mo_coeff_kpts is None or mo_occ_kpts is None:
         raise ValueError("Need kmf or (kpts, mo_coeff_kpts, mo_occ_kpts).")
 
+    mo_coeff_kpts = [to_numpy(c) for c in mo_coeff_kpts]
+    mo_occ_kpts = [to_numpy(o) for o in mo_occ_kpts]
     nkpts = len(kpts)
     nao = cell.nao_nr()
 
@@ -244,15 +247,10 @@ def make_iao_pao_kbasis(
         )
 
     # 2. Occupied MOs at each k. RHF: mo_occ ∈ {0, 2}; ROHF: ∈ {0, 1, 2}.
-    orbocc = [
-        np.asarray(mo_coeff_kpts[k])[:, np.asarray(mo_occ_kpts[k]) > 0]
-        for k in range(nkpts)
-    ]
+    orbocc = [mo_coeff_kpts[k][:, mo_occ_kpts[k] > 0] for k in range(nkpts)]
     has_frac = any(
         (
-            (np.asarray(mo_occ_kpts[k]) != 0.0)
-            & (np.asarray(mo_occ_kpts[k]) != 1.0)
-            & (np.asarray(mo_occ_kpts[k]) != 2.0)
+            (mo_occ_kpts[k] != 0.0) & (mo_occ_kpts[k] != 1.0) & (mo_occ_kpts[k] != 2.0)
         ).any()
         for k in range(nkpts)
     )
