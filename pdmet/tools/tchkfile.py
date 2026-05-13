@@ -206,6 +206,38 @@ def load_w90(w90, chkfile):
     return w90
 
 
+def _to_str(x):
+    """h5py >= 3.0 returns variable-length strings as bytes; canonicalize."""
+    if isinstance(x, (bytes, np.bytes_)):
+        return x.decode()
+    return x
+
+
+def save_lo_iao(local, chkfile):
+    ao2lo = local.ao2lo
+    lo_labels = local.lo_labels
+
+    local_dic = {
+        "ao2lo": ao2lo,
+        "lo_labels": lo_labels,
+        "minao": local.minao,
+    }
+    local_dic = {k: _fix_empty(v) for k, v in local_dic.items()}
+    save(chkfile, "local", local_dic)
+
+
+def load_lo_iao(chkfile):
+    save_local = load(chkfile, "local")
+    raw_labels = save_local["lo_labels"]
+    return {
+        "ao2lo": save_local["ao2lo"],
+        "lo_labels": (
+            None if raw_labels is None else [_to_str(label) for label in raw_labels]
+        ),
+        "minao": _to_str(save_local["minao"]),
+    }
+
+
 def save_pdmet(pdmet, chkfile):
     solver = pdmet.solver
     chempot = pdmet.chempot

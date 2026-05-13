@@ -81,7 +81,7 @@ if not os.path.exists(dmrg_path):
     os.mkdir(dmrg_path)
 
 pdmet.kmf_chkfile = "chk_HF"
-pdmet.w90_chkfile = "chk_w90"
+pdmet.lobasis.w90_chkfile = "chk_w90"
 pdmet.emb.impCluster = [1]
 pdmet.emb.impOrbs_threshold = 1.5
 pdmet.solver.twoS = 0
@@ -89,10 +89,12 @@ pdmet.solver.cas = (4, 4)
 pdmet.solver.dmrg = DMRGSettings()
 pdmet.solver.dmrg.scratch_dir = dmrg_path
 pdmet.solver.dmrg.runtime_dir = dmrg_path
+
 # State-average Specific + NEVPT2 example
 pdmet.solver.nevpt2_roots = [0]
 pdmet.solver.nevpt2_nroots = 1
 pdmet.solver.nroots = 1
+
 # State-average over 2 states with equal weights
 # weight = 1.0 / 3
 # pdmet.solver.nevpt2_roots = list(range(0, 3))

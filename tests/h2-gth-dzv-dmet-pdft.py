@@ -67,9 +67,12 @@ pdmet = dmet.pDMET(
     cell,
     kmf,
     w90,
+    lo_method="wannier",
     solver="CASCI",
 )  # pass an hf object (scf.ROHF(cell).density_fit()), not a khf object i.e. scf.KROHF(cell, kpts).density_fit(). scf.KROHF(cell, kpts).density_fit() prints an output type not compatible with slicing.
+pdmet.lobasis.minao = "gth-dzv"
 pdmet.emb.impCluster = [1]
+pdmet.emb.imp_orbital_filter = {"H": ["1s", "2s", "2px", "2py", "2pz"]}
 pdmet.emb.impOrbs_threshold = 1.5
 pdmet.solver.twoS = 0
 pdmet.solver.cas = (2, 2)
@@ -77,33 +80,3 @@ pdmet.solver.e_shift = 0.5
 pdmet.initialize()
 pdmet.one_shot()
 pdmet.plot(orb="wfs", grid=[50, 50, 50], path="./", fmt="xsf")
-
-"""
-
-'''================================'''
-''' Molecular-point MC-PDFT  '''
-'''================================'''
-
-
-mol2 = cell.to_mol()
-hf = scf.ROHF(mol2).density_fit()
-# hf.with_df._cderi = 'gdf.h5'
-hf.verbose=5
-hf_2=hf
-hf.run()
-print("hf mo coeff",hf.mo_coeff)
-######################## print("mo coefficient of hfyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",hf.mo_coeff)
-######################## randommc= mcscf.CASSCF(hf, 4, 2)
-
-######################## print("randommc.mo_coeff",randommc.mo_coeff)
-mc = mcpdft.CASSCF (hf, 'tPBE', 4, 2, grids_level=6)
-mc = mc.fix_spin_(shift=0.5, ss=2)
-print("mcpdft mo coeff is --------------------------------------",mc.mo_coeff)
-############################## mc.fcisolver = csf_solver (cell, smult = 1)
-mc.verbose = 3
-Vnn = mc._scf.energy_nuc()
-print("Vnn ----------------------------------------------------------------------------------------XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",Vnn)
-mc.kernel ()
-print("mc.mo_occ",mc.mo_occ)
-
-"""
