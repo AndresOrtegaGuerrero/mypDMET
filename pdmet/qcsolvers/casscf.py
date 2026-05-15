@@ -1,5 +1,5 @@
 from pdmet.qcsolvers.casbase import BaseCASSolver
-from pyscf import mcscf, mrpt, lib, fci
+from pyscf import mcscf, lib, fci
 import numpy as np
 
 
@@ -109,6 +109,9 @@ class CASSCFSolver(BaseCASSolver):
         print(
             f"  State {state_id}: E(CASSCF)={e_tot:12.8f}  E_cell={e_cell:12.8f} <S^2>={self.SS:8.6f}"
         )
+        self._print_ci_analysis(
+            fcivec, cas_norb, self.mc.nelecas[0], self.mc.nelecas[1], state_id
+        )
         return e_cell, RDM1
 
     def _state_average(self, fcivec, cas_norb, e_tot, weights):
@@ -126,6 +129,9 @@ class CASSCFSolver(BaseCASSolver):
             print(
                 f"  State {i} ({weights[i]:.3f}): E(CASSCF)={e_tot[i]:12.8f}  "
                 f"E(imp)={e_imp:12.8f}  <S^2>={ss[i]:8.6f}"
+            )
+            self._print_ci_analysis(
+                civec, cas_norb, self.mc.nelecas[0], self.mc.nelecas[1], i
             )
             RDM1s.append(rdm1)
             e_cells.append(e_imp)
@@ -156,7 +162,7 @@ class CASSCFSolver(BaseCASSolver):
             mc_ci.fcisolver.nroots = nevpt2_nroots[i]
             fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-            res, tdm = self._nevpt2_from_mc_ci(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
+            res, tdm = self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
             e_casci_nevpt2.extend(res)
             t_dm1s.extend(tdm)
 
@@ -186,41 +192,9 @@ class CASSCFSolver(BaseCASSolver):
 
         fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-        e_casci_nevpt2, t_dm1s = self._nevpt2_from_mc_ci(
+        e_casci_nevpt2, t_dm1s = self._nevpt2_fci_roots(
             mc_ci, fcivec, nevpt2_roots, cas_norb
         )
 
         print("=" * 45)
         return (e_tot, np.asarray(e_casci_nevpt2), t_dm1s)
-
-    def _nevpt2_from_mc_ci(self, mc_ci, fcivec, roots, cas_norb):
-        e_casci_nevpt2, t_dm1s = [], []
-
-        # Ensure fcivec is always a list of CI vectors
-        if not isinstance(fcivec, (list, tuple)):
-            fcivec = [fcivec]
-        # Apply NEVPT2 correction
-        for root in roots:
-            ci = fcivec[root]
-            ss = mc_ci.fcisolver.spin_square(ci, cas_norb, mc_ci.nelecas)[0]
-            e_corr = mrpt.NEVPT(mc_ci, root).kernel()
-            e_cas_root = (
-                mc_ci.e_tot
-                if not isinstance(mc_ci.e_tot, np.ndarray)
-                else mc_ci.e_tot[root]
-            )
-            t_dm1s.append(self._transition_dm1(mc_ci, fcivec, root, cas_norb))
-            e_casci_nevpt2.append([ss, e_cas_root, e_cas_root + e_corr])
-            self._print_ci_analysis(
-                ci, cas_norb, mc_ci.nelecas[0], mc_ci.nelecas[1], root
-            )
-
-        return e_casci_nevpt2, t_dm1s
-
-    def _transition_dm1(self, mc_ci, fcivec, root, cas_norb):
-        """Transition 1-RDM between ground state and excited root."""
-        t_dm1 = mc_ci.fcisolver.trans_rdm1(
-            fcivec[0], fcivec[root], mc_ci.ncas, mc_ci.nelecas
-        )
-        orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
-        return orbcas @ t_dm1 @ orbcas.T

@@ -84,32 +84,55 @@ class BaseCASSolver(BaseSolver):
     def _print_ci_analysis(
         self, ci, cas_norb, neleca, nelecb, root, tol=0.1, max_det=4
     ):
+        """
+        Per-state CI summary:
+            weight  |α,β>   (SCS: 2 / u / d / 0 per orbital)
+        plus natural-orbital occupations from the 1-RDM.
+
+        Conventions
+        -----------
+        - PySCF: bit i of the determinant string == orbital i.
+        - Bit strings printed with ORBITAL 0 ON THE LEFT,
+          so reading left→right walks orbitals 0, 1, 2, ...
+        - SCS code per orbital:
+            (α=1, β=1) -> '2'   doubly occupied
+            (α=1, β=0) -> 'u'   single α
+            (α=0, β=1) -> 'd'   single β
+            (α=0, β=0) -> '0'   empty
+        """
         from pyscf.fci import addons, direct_spin1
 
-        # RDM1 , occupations
+        # Natural-orbital occupations (eigenvalues of the 1-RDM, descending).
         rdm1 = direct_spin1.make_rdm1(ci, cas_norb, (neleca, nelecb))
         occ = np.linalg.eigvalsh(rdm1)[::-1]
 
-        # determinants in string representation
-        dominant = addons.large_ci(
+        # Dominant determinants, sorted by |coeff|.
+        dets = addons.large_ci(
             ci, cas_norb, (neleca, nelecb), tol=tol, return_strs=True
         )
+        dets = sorted(dets, key=lambda x: -abs(x[0]))[:max_det]
 
-        def _fmt_det(s, cas_norb):
-            """Convert '0b11' → '0011' padded to cas_norb digits."""
-            bits = bin(int(s, 2))[2:].ljust(cas_norb, "0")
-            return bits
+        def _to_int(s):
+            # pyscf may return '0b1010', '1010', or already an int — handle all.
+            if isinstance(s, str):
+                s = s[2:] if s.startswith("0b") else s
+                return int(s, 2)
+            return int(s)
 
-        # Sort and only take the most important determinants for display
-        dominant = sorted(dominant, key=lambda x: -abs(x[0]))[:max_det]
+        def _orb_bits(s):
+            """List of 0/1 with orbital 0 first, length cas_norb."""
+            x = _to_int(s)
+            return [(x >> i) & 1 for i in range(cas_norb)]
 
-        det_str = " + ".join(
-            f"{coeff:+.4f}|{_fmt_det(stra, cas_norb)},{_fmt_det(strb, cas_norb)}>"
-            for coeff, stra, strb in dominant
-        )
+        _scs = {(1, 1): "2", (1, 0): "u", (0, 1): "d", (0, 0): "0"}
 
-        print(f"  State {root}: {det_str}")
-        print(f"    Occupancies: {np.round(occ, 4).tolist()}")
+        print(f"  State {root}")
+        for coeff, stra, strb in dets:
+            a, b = _orb_bits(stra), _orb_bits(strb)
+            det = f"{''.join(map(str, a))},{''.join(map(str, b))}"
+            scs = " ".join(_scs[(ai, bi)] for ai, bi in zip(a, b))
+            print(f"    {coeff:+.4f} |{det}>   ({scs})")
+        print(f"    Natural occupancies: {np.round(occ, 4).tolist()}")
 
     def _impurity_energy_from_cas_naive(self, mc, cas_norb, RDM1, casdm2):
         Nimp = self.Nimp
@@ -311,3 +334,42 @@ class BaseCASSolver(BaseSolver):
             two_body += 0.125 * (E_coul + E_exch + E_mix)
 
         return one_body + two_body
+
+    def _nevpt2_fci_roots(self, mc_ci, fcivec, roots, cas_norb):
+        from pyscf import mrpt
+
+        e_casci_nevpt2, t_dm1s = [], []
+
+        # Ensure fcivec is always a list of CI vectors
+        if not isinstance(fcivec, (list, tuple)):
+            fcivec = [fcivec]
+        # Apply NEVPT2 correction
+
+        # Print header
+        print("=" * 45)
+        print("NEVPT2 results:")
+        print("=" * 45)
+        for root in roots:
+            ci = fcivec[root]
+            ss = mc_ci.fcisolver.spin_square(ci, cas_norb, mc_ci.nelecas)[0]
+            e_corr = mrpt.NEVPT(mc_ci, root).kernel()
+            e_cas_root = (
+                mc_ci.e_tot
+                if not isinstance(mc_ci.e_tot, np.ndarray)
+                else mc_ci.e_tot[root]
+            )
+            t_dm1s.append(self._transition_dm1(mc_ci, fcivec, root, cas_norb))
+            e_casci_nevpt2.append([ss, e_cas_root, e_cas_root + e_corr])
+            self._print_ci_analysis(
+                ci, cas_norb, mc_ci.nelecas[0], mc_ci.nelecas[1], root
+            )
+
+        return e_casci_nevpt2, t_dm1s
+
+    def _transition_dm1(self, mc_ci, fcivec, root, cas_norb):
+        """Transition 1-RDM between ground state and excited root."""
+        t_dm1 = mc_ci.fcisolver.trans_rdm1(
+            fcivec[0], fcivec[root], mc_ci.ncas, mc_ci.nelecas
+        )
+        orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
+        return orbcas @ t_dm1 @ orbcas.T

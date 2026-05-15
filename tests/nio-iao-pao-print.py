@@ -16,6 +16,7 @@ from pyscf.pbc import gto, scf, df
 
 from pdmet import dmet
 from pdmet.tools import tchkfile
+from pdmet.tools.mo_plot import plot_mo_projections, find_ao_indices
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 
@@ -96,6 +97,10 @@ def main():
     out_dir = os.path.join(here, "nio_lo_xsf")
     os.makedirs(out_dir, exist_ok=True)
     pdmet_obj.plot(orb="lo", grid=[40, 40, 40], path=out_dir, fmt="xsf")
+    projections = {"Ni 3d": find_ao_indices(cell, "Ni", "3d")}
+    _ = plot_mo_projections(
+        kmf, projections, title="Ni 3d projections", savepath="ni3d_test.png"
+    )
 
     print(f"\nLO XSF files in: {out_dir}")
     print("\nDone.")

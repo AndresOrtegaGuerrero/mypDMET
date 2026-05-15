@@ -77,6 +77,20 @@ pdmet.emb.impOrbs_threshold = 1.5
 pdmet.solver.twoS = 0
 pdmet.solver.cas = (2, 2)
 pdmet.solver.e_shift = 0.5
+
+# #Excitations SA-CASSCF
+weight = 1.0 / 3
+pdmet.solver.nroots = 3
+pdmet.solver.state_average_ = [weight, weight, weight]
+
+# pdmet.solver.nevpt2_roots = [0]
+# pdmet.solver.nevpt2_nroots = 1
+
+# #Excitation NEVPT2
+pdmet.solver.nevpt2_roots = list(range(0, 3))
+pdmet.solver.state_average_ = [weight, weight, weight]
+pdmet.solver.nevpt2_nroots = 3
+
 pdmet.initialize()
 pdmet.one_shot()
 pdmet.plot(orb="wfs", grid=[50, 50, 50], path="./", fmt="xsf")
