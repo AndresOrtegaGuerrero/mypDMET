@@ -51,7 +51,21 @@ class BaseCASSolver(BaseSolver):
         return self.settings.cas
 
     def _setup_cas_object(self, mc, cas_norb, cas_nelec):
-        """Sync a CASCI/CASSCF mc object with the current mol/mf state."""
+        """Sync a CASCI/CASSCF mc object with the current mol/mf state.
+
+        After `_setup_mf` the underlying mean-field is DF-wrapped, but the
+        CAS object was constructed in __init__ from the plain mf and still
+        carries the non-DF `ao2mo` path. We DF-wrap it here so that
+        mcscf.mc_ao2mo routes through the 3-center tensor instead of
+        looking for `mf._eri` (which no longer exists).
+        """
+        if (
+            hasattr(self.mf, "with_df")
+            and self.mf.with_df is not None
+            and not getattr(mc, "with_df", None)
+        ):
+            mc = mc.density_fit(with_df=self.mf.with_df)
+            self.mc = mc  # rebind so the caller sees the wrapped object
         mc.mol = self.mol
         mc._scf = self.mf
         mc.ncas = cas_norb
@@ -337,6 +351,10 @@ class BaseCASSolver(BaseSolver):
 
     def _nevpt2_fci_roots(self, mc_ci, fcivec, roots, cas_norb):
         from pyscf import mrpt
+
+        # mrpt.NEVPT has no DF integral path — make sure mc_ci._scf carries
+        # the embedding ERI before pt.kernel() runs.
+        self._ensure_eri(mc_ci._scf)
 
         e_casci_nevpt2, t_dm1s = [], []
 

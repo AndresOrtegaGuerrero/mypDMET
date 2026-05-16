@@ -128,9 +128,7 @@ class pDMET:
         assert (self.chkfile is None) or isinstance(self.chkfile, str)
         if self.kmf_chkfile is not None and hasattr(self.kmf.with_df, "_cderi"):
             self.kmf = tchkfile.load_kmf(
-                self.cell,
                 self.kmf,
-                self.kmesh,
                 self.kmf_chkfile,
                 max_memory=self.max_memory,
             )
