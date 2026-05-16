@@ -120,6 +120,7 @@ class CASSCFSolver(BaseCASSolver):
         rdm1s_cas, rdm2s_cas = self.mc.fcisolver.states_make_rdm12(
             fcivec, cas_norb, self.mc.nelecas
         )
+        nelecas_list = self._nelecas_per_state(len(fcivec))
         for i, civec in enumerate(fcivec):
             rdm1 = self._cas_rdm1_to_local_from_dm(rdm1s_cas[i], self.mc, cas_norb)
             e_imp = self.kmf_ecore + self._impurity_energy_from_cas_df(
@@ -130,9 +131,11 @@ class CASSCFSolver(BaseCASSolver):
                 f"  State {i} ({weights[i]:.3f}): E(CASSCF)={e_tot[i]:12.8f}  "
                 f"E(imp)={e_imp:12.8f}  <S^2>={ss[i]:8.6f}"
             )
-            self._print_ci_analysis(
-                civec, cas_norb, self.mc.nelecas[0], self.mc.nelecas[1], i
-            )
+            neleca_i, nelecb_i = nelecas_list[i]
+            self._print_ci_analysis(civec, cas_norb, neleca_i, nelecb_i, i)
+            # self._print_ci_analysis(
+            #    civec, cas_norb, self.mc.nelecas[0], self.mc.nelecas[1], i
+            # )
             RDM1s.append(rdm1)
             e_cells.append(e_imp)
 

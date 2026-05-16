@@ -373,3 +373,26 @@ class BaseCASSolver(BaseSolver):
         )
         orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
         return orbcas @ t_dm1 @ orbcas.T
+
+    def _nelecas_per_state(self, n_states):
+        """
+        Return a list of (neleca, nelecb) — one per CI vector.
+
+        state_average_mix_: each underlying fcisolver carries its own 2S,
+        so the (na, nb) sector differs from state to state.
+        plain state_average_ (one solver): all states share self.mc.nelecas.
+        """
+        cas_nelec = sum(self.mc.nelecas)
+        fcisolvers = getattr(self.mc.fcisolver, "fcisolvers", None)
+
+        if fcisolvers is None:
+            # Single solver, same sector for every state.
+            return [tuple(self.mc.nelecas)] * n_states
+
+        out = []
+        for solver in fcisolvers:
+            two_s = getattr(solver, "spin", 0)
+            neleca = (cas_nelec + two_s) // 2
+            nelecb = cas_nelec - neleca
+            out.extend([(neleca, nelecb)] * solver.nroots)
+        return out

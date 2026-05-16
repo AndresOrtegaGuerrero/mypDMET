@@ -6,7 +6,7 @@ from pyscf.pbc import gto, scf, df
 
 from pdmet import dmet
 from pdmet.tools import tchkfile
-
+from pdmet.settings import StateConfig
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 
@@ -68,7 +68,7 @@ pdmet = dmet.pDMET(
     kmf,
     w90,
     lo_method="wannier",
-    solver="CASCI",
+    solver="SA-CASSCF",
 )  # pass an hf object (scf.ROHF(cell).density_fit()), not a khf object i.e. scf.KROHF(cell, kpts).density_fit(). scf.KROHF(cell, kpts).density_fit() prints an output type not compatible with slicing.
 pdmet.lobasis.minao = "gth-dzv"
 pdmet.emb.impCluster = [1]
@@ -79,17 +79,28 @@ pdmet.solver.cas = (2, 2)
 pdmet.solver.e_shift = 0.5
 
 # #Excitations SA-CASSCF
-weight = 1.0 / 3
-pdmet.solver.nroots = 3
-pdmet.solver.state_average_ = [weight, weight, weight]
+# weight = 1.0 / 3
+# pdmet.solver.nroots = 3
+# pdmet.solver.state_average_ = [weight, weight, weight]
 
 # pdmet.solver.nevpt2_roots = [0]
 # pdmet.solver.nevpt2_nroots = 1
 
 # #Excitation NEVPT2
-pdmet.solver.nevpt2_roots = list(range(0, 3))
-pdmet.solver.state_average_ = [weight, weight, weight]
-pdmet.solver.nevpt2_nroots = 3
+# pdmet.solver.nevpt2_roots = list(range(0, 3))
+# pdmet.solver.state_average_ = [weight, weight, weight]
+# pdmet.solver.nevpt2_nroots = 3
+
+
+# State average mixing example
+pdmet.solver.state_average_mix_ = [
+    StateConfig(spin=0, roots=1, weights=[0.5]),
+    StateConfig(spin=2, roots=1, weights=[0.5]),  # was roots=2
+]
+pdmet.solver.nevpt2_roots = [[0], [0]]
+pdmet.solver.nevpt2_nroots = [1, 1]
+pdmet.solver.nroots = 2
+
 
 pdmet.initialize()
 pdmet.one_shot()
