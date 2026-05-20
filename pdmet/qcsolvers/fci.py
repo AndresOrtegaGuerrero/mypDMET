@@ -53,6 +53,8 @@ class FCISolver(BaseSolver):
 
     def kernel(self):
         self._setup_mf()
+        # FCI has no DF formulation
+        self._ensure_eri()
         self.fs = self._build_fs()
         EFCI, fcivec = self.fs.kernel(ci0=self.ci)
 

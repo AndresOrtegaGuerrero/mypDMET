@@ -6,7 +6,7 @@ from pyscf.pbc import gto, scf, df
 
 from pdmet import dmet
 from pdmet.tools import tchkfile
-
+from pdmet.settings import StateConfig
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 
@@ -46,7 +46,7 @@ tchkfile.save_kmf(khf, "chk_HF")
 """================================"""
 """ Contruct MLWFs """
 """================================"""
-kmf = tchkfile.load_kmf(cell, khf, kmesh, "chk_HF")
+kmf = tchkfile.load_kmf(khf, "chk_HF")
 num_wann = cell.nao
 keywords = """
 num_iter = 5000
@@ -59,7 +59,7 @@ guiding_centres = .true.
 w90 = pywannier90.W90(kmf, cell, kmesh, num_wann, other_keywords=keywords)
 w90.kernel()
 
-kmf = tchkfile.load_kmf(cell, khf, kmesh, "chk_HF")
+kmf = tchkfile.load_kmf(khf, "chk_HF")
 """================================"""
 """ Run DMET """
 """================================"""
@@ -68,7 +68,7 @@ pdmet = dmet.pDMET(
     kmf,
     w90,
     lo_method="wannier",
-    solver="CASCI",
+    solver="SA-CASSCF",
 )  # pass an hf object (scf.ROHF(cell).density_fit()), not a khf object i.e. scf.KROHF(cell, kpts).density_fit(). scf.KROHF(cell, kpts).density_fit() prints an output type not compatible with slicing.
 pdmet.lobasis.minao = "gth-dzv"
 pdmet.emb.impCluster = [1]
@@ -77,6 +77,31 @@ pdmet.emb.impOrbs_threshold = 1.5
 pdmet.solver.twoS = 0
 pdmet.solver.cas = (2, 2)
 pdmet.solver.e_shift = 0.5
+
+# #Excitations SA-CASSCF
+# weight = 1.0 / 3
+# pdmet.solver.nroots = 3
+# pdmet.solver.state_average_ = [weight, weight, weight]
+
+# pdmet.solver.nevpt2_roots = [0]
+# pdmet.solver.nevpt2_nroots = 1
+
+# #Excitation NEVPT2
+# pdmet.solver.nevpt2_roots = list(range(0, 3))
+# pdmet.solver.state_average_ = [weight, weight, weight]
+# pdmet.solver.nevpt2_nroots = 3
+
+
+# State average mixing example
+pdmet.solver.state_average_mix_ = [
+    StateConfig(spin=0, roots=1, weights=[0.5]),
+    StateConfig(spin=2, roots=1, weights=[0.5]),  # was roots=2
+]
+pdmet.solver.nevpt2_roots = [[0], [0]]
+pdmet.solver.nevpt2_nroots = [1, 1]
+pdmet.solver.nroots = 2
+
+
 pdmet.initialize()
 pdmet.one_shot()
 pdmet.plot(orb="wfs", grid=[50, 50, 50], path="./", fmt="xsf")

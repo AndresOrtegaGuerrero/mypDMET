@@ -31,6 +31,7 @@ from pdmet import helper, df, df_hamiltonian
 from pyscf.pbc.tools.k2gamma import kpts_to_kmesh
 from pdmet.tools import tchkfile
 from pdmet.settings import LOMethod
+from pdmet.tools.tchkfile import to_numpy
 
 
 def _klowdin(C, S, tol=1.0e-12):
@@ -234,6 +235,8 @@ def make_iao_pao_kbasis(
     if kpts is None or mo_coeff_kpts is None or mo_occ_kpts is None:
         raise ValueError("Need kmf or (kpts, mo_coeff_kpts, mo_occ_kpts).")
 
+    mo_coeff_kpts = [to_numpy(c) for c in mo_coeff_kpts]
+    mo_occ_kpts = [to_numpy(o) for o in mo_occ_kpts]
     nkpts = len(kpts)
     nao = cell.nao_nr()
 
@@ -244,15 +247,10 @@ def make_iao_pao_kbasis(
         )
 
     # 2. Occupied MOs at each k. RHF: mo_occ ∈ {0, 2}; ROHF: ∈ {0, 1, 2}.
-    orbocc = [
-        np.asarray(mo_coeff_kpts[k])[:, np.asarray(mo_occ_kpts[k]) > 0]
-        for k in range(nkpts)
-    ]
+    orbocc = [mo_coeff_kpts[k][:, mo_occ_kpts[k] > 0] for k in range(nkpts)]
     has_frac = any(
         (
-            (np.asarray(mo_occ_kpts[k]) != 0.0)
-            & (np.asarray(mo_occ_kpts[k]) != 1.0)
-            & (np.asarray(mo_occ_kpts[k]) != 2.0)
+            (mo_occ_kpts[k] != 0.0) & (mo_occ_kpts[k] != 1.0) & (mo_occ_kpts[k] != 2.0)
         ).any()
         for k in range(nkpts)
     )
@@ -359,6 +357,10 @@ class Local:
         self.Nkpts = kmf.kpts.shape[0]
         self.nao = cell.nao_nr()
 
+        self.mo_coeff_kpts = [to_numpy(c) for c in kmf.mo_coeff_kpts]
+        self.mo_occ_kpts = [to_numpy(o) for o in kmf.mo_occ_kpts]
+        self.mo_energy_kpts = [to_numpy(e) for e in kmf.mo_energy_kpts]
+
         _, self.phase = self.get_phase(self.cell, self.kpts, self.kmesh)
 
         if lobasis.method == LOMethod.WANNIER:
@@ -394,7 +396,7 @@ class Local:
             self.nelec = [self.cell.nelec[0], self.cell.nelec[1]]
 
         self.nelec_total = 0
-        for kpt, mo_occ in enumerate(kmf.mo_occ_kpts):
+        for kpt, mo_occ in enumerate(self.mo_occ_kpts):
             active = self._get_active_mo_indices(kpt, len(mo_occ))
             self.nelec_total += int(np.asarray(mo_occ)[active].sum())
 
@@ -402,14 +404,14 @@ class Local:
 
         full_OEI_k = kmf.get_hcore()
         coreDM_kpts = []
-        for kpt, mo_coeff in enumerate(kmf.mo_coeff_kpts):
+        for kpt, mo_coeff in enumerate(self.mo_coeff_kpts):
             core_band = self._get_core_band_mask(mo_coeff, kpt)
 
             if not np.any(core_band):
                 nao = mo_coeff.shape[0]
                 coreDM_kpts.append(np.zeros((nao, nao), dtype=np.complex128))
             else:
-                coreDMmo = kmf.mo_occ_kpts[kpt][core_band].copy()
+                coreDMmo = self.mo_occ_kpts[kpt][core_band].copy()
                 mo_k = mo_coeff[:, core_band]
                 coreDMao = reduce(np.dot, (mo_k, np.diag(coreDMmo), mo_k.T.conj()))
                 coreDM_kpts.append(coreDMao)
@@ -447,7 +449,7 @@ class Local:
         # 1e integral for the active part
         self.actOEI_kpts = full_OEI_k + coreJK_kpts
 
-        self.fullfock_kpts = kmf.get_fock()
+        self.fullfock_kpts = kmf.get_fock(s1e=kmf.get_ovlp(), dm=kmf.make_rdm1())
         self.loc_actFOCK_kpts = self.ao_2_loc(self.fullfock_kpts, self.ao2lo)
 
         # DF-like DMET

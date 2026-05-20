@@ -1,5 +1,5 @@
 from pdmet.qcsolvers.casbase import BaseCASSolver
-from pyscf import mcscf, mrpt, lib
+from pyscf import mcscf, lib
 import numpy as np
 
 
@@ -61,6 +61,10 @@ class CASCISolver(BaseCASSolver):
             self.mc, cas_norb, RDM1, casdm2_mo
         )
 
+        self._print_ci_analysis(
+            fcivec, cas_norb, self.mc.nelecas[0], self.mc.nelecas[1], 0
+        )
+
         return e_cell, RDM1
 
     def _multi_root(self, fcivec, cas_norb, e_tot):
@@ -76,6 +80,10 @@ class CASCISolver(BaseCASSolver):
             print(
                 f"  Root {i}: E(CASCI)={e_tot[i]:12.8f}  E(imp)={e_imp:12.8f}  <S^2>={ss:8.6f}"
             )
+            self._print_ci_analysis(
+                civec, cas_norb, self.mc.nelecas[0], self.mc.nelecas[1], i
+            )
+
             RDM1s.append(rdm1)
             e_cells.append(e_imp)
             ss_list.append(ss)
@@ -98,19 +106,9 @@ class CASCISolver(BaseCASSolver):
         mc_ci.fcisolver.nroots = self.settings.nevpt2_nroots
         fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-        e_casci_nevpt2 = []
-        for root in self.settings.nevpt2_roots:
-            ci = fcivec[root]
-            ss = mc_ci.fcisolver.spin_square(ci, cas_norb, mc_ci.nelecas)[0]
-            e_corr = mrpt.NEVPT(mc_ci, root).kernel()
-            e_cas_root = (
-                mc_ci.e_tot
-                if not isinstance(mc_ci.e_tot, np.ndarray)
-                else mc_ci.e_tot[root]
-            )
-            e_casci_nevpt2.append([ss, e_cas_root, e_cas_root + e_corr])
-        # Pack E_CASSCF and E_NEVPT2 into a tuple of e_tot
+        e_casci_nevpt2, t_dm1s = self._nevpt2_fci_roots(
+            mc_ci, fcivec, self.settings.nevpt2_roots, cas_norb
+        )
         e_casci_nevpt2 = np.asarray(e_casci_nevpt2)
-        e_tot = (e_tot, e_casci_nevpt2)
 
-        return e_tot
+        return (e_tot, e_casci_nevpt2, t_dm1s)

@@ -117,6 +117,66 @@ def dump_cubes(label, cell, C_ao_lo, labels, picks, outdir, nx=40, ny=40, nz=40)
         print(f"  [{label}] wrote {fname}")
 
 
+def run_param_variants(cell, kmf, label):
+    """Smoke-test parameter paths beyond the pDMET defaults.
+
+    Local.__init__ always uses (max_ovlp=True, orth_virt=True, full_virt=False),
+    but make_iao_pao_kbasis exposes other paths for analysis/plotting. Each path
+    has its own contract — we check the contract holds, not that the numbers are
+    identical to the default run.
+
+      A. max_ovlp=False         -> still orthonormal (global Löwdin does the work)
+      B. full_virt=True         -> overcomplete (nval + nao columns), skips orth check
+      C. full_virt + orth_virt  -> must raise ValueError (rank-deficient combo)
+    """
+    nkpts = kmf.kpts.shape[0]
+    nao = cell.nao_nr()
+    S = np.asarray(cell.pbc_intor("int1e_ovlp", hermi=1, kpts=kmf.kpts))
+
+    # A. drop per-atom Löwdin. PAOs lose strict atom-centering but the
+    # *global* Löwdin at the end still gives us C^H S C = I.
+    Ca, _, _, _ = make_iao_pao_kbasis(
+        cell, kmf=kmf, minao="gth-szv-molopt-sr", max_ovlp=False
+    )
+    err_a = max(
+        np.abs(Ca[k].conj().T @ S[k] @ Ca[k] - np.eye(nao)).max() for k in range(nkpts)
+    )
+    print(f"  [{label}/max_ovlp=False] orth err = {err_a:.2e}")
+    assert Ca.shape == (nkpts, nao, nao)
+    assert err_a < 1e-9, "max_ovlp=False should still be orthonormal"
+
+    # B. project EVERY AO (not just B1\B2). Result is overcomplete on purpose
+    # — nval + nao columns spanning a rank-nao subspace. Used for diagnostics
+    # only (e.g. inspecting non-orthogonal PAO character). pDMET never uses
+    # this path; the orthonormality check is skipped inside the function.
+    Cb, Cval_b, _, _ = make_iao_pao_kbasis(
+        cell,
+        kmf=kmf,
+        minao="gth-szv-molopt-sr",
+        full_virt=True,
+        orth_virt=False,
+        max_ovlp=False,
+    )
+    nval = Cval_b.shape[-1]
+    assert Cb.shape == (nkpts, nao, nval + nao), Cb.shape
+    print(f"  [{label}/full_virt=True] shape = {Cb.shape} (overcomplete OK)")
+
+    # C. invalid combo: orthonormalizing an overcomplete set is rank-deficient.
+    # We want a loud failure, not a silent truncation that hides the bug.
+    try:
+        make_iao_pao_kbasis(
+            cell,
+            kmf=kmf,
+            minao="gth-szv-molopt-sr",
+            full_virt=True,
+            orth_virt=True,
+        )
+    except ValueError:
+        print(f"  [{label}/full_virt+orth_virt] raised ValueError as expected")
+    else:
+        raise AssertionError("expected ValueError for full_virt=True + orth_virt=True")
+
+
 def run_one(spin, label, outdir):
     print(f"\n=== NiO  {label}  (spin={spin}) ===")
     cell = build_nio_cell(spin=spin)
@@ -138,6 +198,7 @@ def run_one(spin, label, outdir):
     )
 
     run_checks(label, cell, kmf, C_ao_lo, C_val, C_virt)
+    run_param_variants(cell, kmf, label)
 
     nao = C_ao_lo.shape[-1]
     nval = C_val.shape[-1]
@@ -160,11 +221,11 @@ def main():
     outdir = os.path.join(here, "iao_pao_cubes")
 
     e_rhf = run_one(spin=0, label="rhf", outdir=outdir)
-    # e_rohf = run_one(spin=2, label="rohf", outdir=outdir)
+    e_rohf = run_one(spin=2, label="rohf", outdir=outdir)
 
     print("\nSummary")
     print(f"  RHF  E = {e_rhf:.6f}")
-    # print(f"  ROHF E = {e_rohf:.6f}")
+    print(f"  ROHF E = {e_rohf:.6f}")
     print(f"\nCubes written to: {outdir}")
     print("All checks passed.")
 

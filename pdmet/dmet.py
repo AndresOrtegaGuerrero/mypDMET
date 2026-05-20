@@ -128,9 +128,7 @@ class pDMET:
         assert (self.chkfile is None) or isinstance(self.chkfile, str)
         if self.kmf_chkfile is not None and hasattr(self.kmf.with_df, "_cderi"):
             self.kmf = tchkfile.load_kmf(
-                self.cell,
                 self.kmf,
-                self.kmesh,
                 self.kmf_chkfile,
                 max_memory=self.max_memory,
             )
@@ -646,10 +644,25 @@ class pDMET:
         else:
             raise Exception("WARNING: HF-in-HF embedding is not exact")
 
-    def one_shot(self, umat=0.0, proj_DMET=False):
+    def one_shot(self, umat=0.0, proj_DMET=False, force_chempot_fit=False):
         """
         Do one-shot DMET, only the chemical potential is optimized
         this function takes umat or loc_1RDM_R0 (p-DMET algorthm)
+
+        Args:
+            umat              : correlation potential added to lattice Hamiltonian
+                                (ignored when proj_DMET=True; reference comes
+                                from self.loc_1RDM_R0 instead).
+            proj_DMET         : if True, skip rebuilding loc_1RDM_R0 from umat;
+                                use the current self.loc_1RDM_R0 (projected
+                                density from previous p-DMET cycle).
+            force_chempot_fit : if True, run a Newton chemical-potential fit
+                                even at Gamma. Default False preserves the
+                                fast path for idempotent references (HF/ROHF
+                                cycle 1). Used by projected_DMET on cycle >= 2
+                                where the projected reference is non-idempotent
+                                and Tr(D_imp_block) can drift from the lattice
+                                target (Alg. 1, lines 3-11 of Wu et al. 2019).
         """
 
         self._print_solver_header()
@@ -670,15 +683,91 @@ class pDMET:
         )
 
         # Solve embedding
-        if self._is_gamma:
-            _ = self.kernel(chempot=0.0)
+        if self._is_gamma and not force_chempot_fit:
+            # Idempotent reference: Schmidt SVD already enforces the correct
+            # impurity-block trace, so chempot = 0 is exact.
+            self.kernel(chempot=0.0)
         else:
-            self.chempot = optimize.newton(self.nelec_cost_func, self.chempot)
+            self._fit_chempot()
             tprint.print_msg(
                 "   No. of electrons per cell : %12.8f" % (self.nelec_per_cell)
             )
 
         self._print_energies()
+
+    # ------------------------------------------------------------------ #
+    # Chemical-potential fit helpers
+    # ------------------------------------------------------------------ #
+    #
+    # Why factored out: in one_shot, the embedding step is a 4-line choice
+    # between "trust the Schmidt SVD" (chempot = 0) and "fit chempot".
+    # Inlining the fit buried that contract under three nested conditionals.
+    # The two helpers below use guard clauses (early returns) so each
+    # degenerate case is handled in one place and the happy path is at the
+    # bottom of the function -- a common Python readability pattern.
+
+    def _revert_chempot(self, chempot):
+        """Restore chempot and re-run kernel so cached state stays consistent.
+
+        After a failed/skipped Newton fit, the last kernel() call may have
+        been at a stale chempot. Replaying kernel here means downstream
+        code (energies, RDM1) reflects the chempot we actually kept.
+        """
+        self.chempot = chempot
+        self.kernel(chempot=chempot)
+
+    def _fit_chempot(self):
+        """Newton fit on the impurity chemical potential.
+
+        Drives Tr(RDM1[:Nimp, :Nimp]) -> target via scipy.optimize.newton.
+        Target depends on the regime:
+          - k-points : self.Nelec_per_cell  (handled by nelec_cost_func)
+          - Gamma fit: imp-block trace of the (non-idempotent) projected
+                       lattice reference, stored in self._target_imp_trace.
+
+        Two degenerate cases are handled defensively:
+          (a) residual already at noise level -> nothing to fit;
+          (b) cost function is flat in chempot (e.g. Nbath = 0 or HF-in-HF)
+              -> Newton would divide by zero slope, so we revert and warn.
+        """
+        chempot_entry = self.chempot
+
+        if self._is_gamma:
+            self._target_imp_trace = np.trace(
+                self.loc_1RDM_R0[0, : self.Nimp, : self.Nimp]
+            ).real
+
+        self._chempot_opt_active = True
+        try:
+            # Guard 1: nothing to fit.
+            residual0 = self.nelec_cost_func(chempot_entry)
+            if abs(residual0) <= 1.0e-4:
+                return
+
+            # Guard 2: cost function flat in chempot.
+            eps = 1.0e-4
+            slope = (self.nelec_cost_func(chempot_entry + eps) - residual0) / eps
+            if abs(slope) < 1.0e-8:
+                tprint.print_msg(
+                    "   WARNING: chempot cost function is flat "
+                    f"(slope = {slope:.2e}); skipping Newton fit "
+                    f"and reverting to chempot = {chempot_entry:.6f}."
+                )
+                self._revert_chempot(chempot_entry)
+                return
+
+            # Happy path: run Newton; fall back on divergence.
+            try:
+                self.chempot = optimize.newton(self.nelec_cost_func, chempot_entry)
+            except RuntimeError as exc:
+                tprint.print_msg(
+                    "   WARNING: chempot Newton fit did not converge "
+                    f"({exc}); reverting to chempot = "
+                    f"{chempot_entry:.6f}."
+                )
+                self._revert_chempot(chempot_entry)
+        finally:
+            self._chempot_opt_active = False
 
     def _print_solver_header(self):
         """Solver header"""
@@ -946,7 +1035,7 @@ class pDMET:
         """
 
         tprint.print_msg("-" * 60)
-        tprint.print_msg("- p-DMET CALCULATION ... STARTING -")
+        tprint.print_msg("- projected p-DMET CALCULATION ... STARTING -")
         tprint.print_msg("  Convergence criteria")
         tprint.print_msg("    Threshold :", self.scf.threshold)
         tprint.print_msg("  Fitting 1-RDM of :", self.scf.CF_type)
@@ -971,7 +1060,8 @@ class pDMET:
         for cycle in range(self.scf.maxcycle):
             tprint.print_msg("- CYCLE %d:" % (cycle + 1))
             global_corr_1RDM_old = global_corr_1RDM
-            self.one_shot(proj_DMET=True)
+            # From Cycle 2 onward, the input is the projected reference, which is non-idempotent in general -> run the Newton mu-fit.
+            self.one_shot(proj_DMET=True, force_chempot_fit=(cycle > 0))
 
             if not self._is_gamma:
                 tprint.print_msg(
@@ -1007,13 +1097,15 @@ class pDMET:
                 )
 
             # Construct new mean-field 1-RDM from the correlated one
-            eigenvals, eigenvecs = np.linalg.eigh(global_corr_1RDM)
-            idx = (-eigenvals).argsort()
-            eigenvals = eigenvals[idx]
-            eigenvecs = eigenvecs[:, idx]
-            num_pairs = self.Nelec_total // 2
-            global_mf_1RDM = 2 * eigenvecs[:, :num_pairs].dot(
-                eigenvecs[:, :num_pairs].T
+            # (p-DMET Eq. 11-12 of Wu et al., JCP 151, 064108 (2019)).
+            # Closed-shell:  D_mf = 2 V V^T,           V = top N/2 NOs
+            # ROHF (S>0):    D_mf = 2 V_dc V_dc^T + V_so V_so^T
+            #                V_dc = top (N-2S)/2 NOs (doubly occupied)
+            #                V_so = next 2S NOs      (singly occupied)
+            # The ROHF branch preserves the {2,1,0} eigenvalue structure that
+            # the ROHF Schmidt bath (Nbath = Nimp + 2S) expects on the next cycle.
+            global_mf_1RDM = self._project_to_mf_density(
+                global_corr_1RDM, self.Nelec_total, self.solver.twoS
             )
             if self._is_gamma:
                 self.loc_1RDM_R0 = (
@@ -1031,19 +1123,71 @@ class pDMET:
         tprint.print_msg("- p-DMET CALCULATION ... DONE -")
         tprint.print_msg("-" * 60)
 
+    @staticmethod
+    def _project_to_mf_density(rdm, Nelec_total, twoS=0):
+        """Project a correlated 1-RDM to a mean-field 1-RDM (p-DMET Eq. 11).
+
+        Implements the minimizer of ||D - D^hl||_F over rank-N (closed-shell)
+        or ROHF-structured density matrices. Used inside projected_DMET to
+        construct the next cycle's mean-field reference from the current
+        cycle's correlated 1-RDM.
+
+        Args:
+            rdm        : correlated 1-RDM (real symmetric, shape (N, N)).
+            Nelec_total: target number of electrons (Tr(D_mf) = Nelec_total).
+            twoS       : 2*S; 0 for closed shell, >0 for ROHF high-spin.
+
+        Returns:
+            D_mf       : projected mean-field 1-RDM, same shape as rdm.
+                         Eigenvalues are exactly {2 (n_dc times),
+                         1 (twoS times), 0 (rest)}.
+        """
+        # Eigendecompose, sort eigenvectors in descending order of occupation.
+        eigenvals, eigenvecs = np.linalg.eigh(rdm)
+        idx = (-eigenvals).argsort()
+        eigenvecs = eigenvecs[:, idx]
+
+        n_so = int(twoS)
+        n_dc = (int(Nelec_total) - n_so) // 2
+
+        V_dc = eigenvecs[:, :n_dc]
+        D_mf = 2.0 * V_dc @ V_dc.conj().T
+        if n_so > 0:
+            V_so = eigenvecs[:, n_dc : n_dc + n_so]
+            D_mf = D_mf + V_so @ V_so.conj().T
+        return D_mf
+
     def nelec_cost_func(self, chempot):
         """
-        The different in the correct number of electrons (provided) and the calculated one
+        Newton residual driven to zero by the chemical-potential fit.
+
+        Two regimes:
+          - k-points (default): nelec_per_cell from kernel() is
+            Tr(RDM1[:Nimp, :Nimp]); target is self.Nelec_per_cell.
+          - Gamma with _chempot_opt_active (p-DMET cycle >= 2): kernel() at
+            Gamma reports Nelec_total instead of the measured imp-block trace,
+            so we read RDM1 from self.emb_corr_1RDM directly and target the
+            imp-block trace of the projected lattice reference (saved in
+            self._target_imp_trace by one_shot).
         """
 
         nelec_per_cell_from_embedding = self.kernel(chempot)
         self._is_new_bath = False
+
+        if getattr(self, "_chempot_opt_active", False):
+            measured = np.trace(self.emb_corr_1RDM[: self.Nimp, : self.Nimp]).real
+            residual = measured - self._target_imp_trace
+            elec_report = measured
+        else:
+            residual = nelec_per_cell_from_embedding - self.Nelec_per_cell
+            elec_report = nelec_per_cell_from_embedding
+
         tprint.print_msg(
             "     Cycle %2d. Chem potential: %12.8f | Elec/cell = %12.8f | <S^2> = %12.8f"
-            % (self._cycle, chempot, nelec_per_cell_from_embedding, self.qcsolver.SS)
+            % (self._cycle, chempot, elec_report, self.qcsolver.SS)
         )
         self._cycle += 1
-        return nelec_per_cell_from_embedding - self.Nelec_per_cell
+        return residual
 
     def cost_func(self, uvec):
         """

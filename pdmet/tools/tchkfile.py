@@ -21,6 +21,7 @@ Email: Hung Q. Pham <pqh3.14@gmail.com>
 
 import numpy as np
 from pyscf.lib.chkfile import save, load
+from pdmet.tools.optional import to_numpy, require_cupy, is_gpu_mf, is_krohf, _bridge
 
 
 def _fix_empty(obj):
@@ -60,22 +61,45 @@ def symmetrize_kmf(cell, kmf, kmesh):
     return kmf
 
 
-def save_kmf(kmf, chkfile):
-    if kmf.exxdiv is None:
-        exxdiv = "None"
+def save_kmf(kmf, chkfile, gpu=None):
+    """Save a converged SCF object to chkfile.
+
+    Args:
+        kmf: SCF mean-field (pyscf or gpu4pyscf)
+        chkfile: filename to save the kmf object
+        gpu:    None (default) auto-detects from kmf's class module
+                True forces cupy -> numpy conversion before write
+                False skips the conversion
+    Notes:
+        * Computing get_fock triggers one JK with GPU is fast
+            with CPU GDF on large cells it's expensive.
+        * The chkfile only stores numpy arrays
+    """
+    if gpu is None:
+        gpu = is_gpu_mf(kmf)
+    if gpu:
+        require_cupy("save_kmf(..., gpu=True)")
+        _np = to_numpy
     else:
-        exxdiv = kmf.exxdiv
+
+        def _np(x):
+            return x
+
+    exxdiv = "None" if kmf.exxdiv is None else kmf.exxdiv
     max_memory = kmf.max_memory
     e_tot = kmf.e_tot
-    kpts = kmf.kpts
-    mo_occ_kpts = kmf.mo_occ_kpts
-    mo_energy_kpts = kmf.mo_energy_kpts
-    mo_coeff_kpts = kmf.mo_coeff_kpts
-    make_rdm1 = kmf.make_rdm1()
-    s1e = kmf.get_ovlp()
-    get_fock = kmf.get_fock(s1e=s1e, dm=make_rdm1)
+    kpts = np.asarray(_np(kmf.kpts))
 
-    kmf_dic = {
+    mo_occ_kpts = _np(kmf.mo_occ_kpts)
+    mo_energy_kpts = _np(kmf.mo_energy_kpts)
+    mo_coeff_kpts = _np(kmf.mo_coeff_kpts)
+
+    # Call JK build once
+    dm = kmf.make_rdm1()
+    s1e = kmf.get_ovlp()
+    fock = kmf.get_fock(s1e=s1e, dm=dm)
+
+    kmf_dict = {
         "exxdiv": exxdiv,
         "max_memory": max_memory,
         "e_tot": e_tot,
@@ -83,70 +107,68 @@ def save_kmf(kmf, chkfile):
         "mo_occ_kpts": mo_occ_kpts,
         "mo_energy_kpts": mo_energy_kpts,
         "mo_coeff_kpts": mo_coeff_kpts,
-        "get_fock": get_fock,
-        "make_rdm1": make_rdm1,
+        "get_fock": _np(fock),
+        "make_rdm1": _np(dm),
     }
 
-    save(chkfile, "scf", kmf_dic)
+    save(chkfile, "scf", kmf_dict)
 
 
-def load_kmf(cell, kmf, kmesh, chkfile, max_memory=4000):
+def load_kmf(kmf, chkfile, max_memory=4000, gpu=None):
     """
     Load a kmf object
     """
+    if gpu is None:
+        gpu = is_gpu_mf(kmf)
+    if gpu:
+        require_cupy("load_kmf(..., gpu=True)")
 
-    save_kmf = load(chkfile, "scf")
+    saved = load(chkfile, "scf")
 
     class fake_kmf:
-        def __init__(self, save_kmf):
-            if save_kmf["exxdiv"] == "None" or save_kmf["exxdiv"] == b"None":
+        def __init__(self, saved):
+            if saved["exxdiv"] in ("None", b"None"):
                 self.exxdiv = None
                 kmf.exxdiv = None
             else:
-                self.exxdiv = save_kmf["exxdiv"]
-                kmf.exxdiv = save_kmf["exxdiv"]
+                self.exxdiv = saved["exxdiv"]
+                kmf.exxdiv = saved["exxdiv"]
 
-            from pyscf.pbc import scf
+            self._is_ROHF = is_krohf(kmf)
 
-            if isinstance(kmf, scf.krohf.KROHF):
-                self._is_ROHF = True
-            elif hasattr(kmf, "_is_ROHF"):
-                self._is_ROHF = kmf._is_ROHF
-            else:
-                self._is_ROHF = False
+            # Stored data
+            self.e_tot = saved["e_tot"]
+            self.kpts = saved["kpts"]
+            self.mo_occ_kpts = saved["mo_occ_kpts"]
+            self.mo_energy_kpts = saved["mo_energy_kpts"]
+            self.mo_coeff_kpts = saved["mo_coeff_kpts"]
 
-            self.e_tot = save_kmf["e_tot"]
-            self.kpts = save_kmf["kpts"]
-            self.mo_occ_kpts = save_kmf["mo_occ_kpts"]
-            self.mo_energy_kpts = save_kmf["mo_energy_kpts"]
-            self.mo_coeff_kpts = save_kmf["mo_coeff_kpts"]
-            self.get_fock = lambda *arg: save_kmf["get_fock"]
-            self.make_rdm1 = lambda *arg: save_kmf["make_rdm1"]
-            self.eig = lambda *arg, **kwargs: kmf.eig(*arg, **kwargs)
-            self.get_ovlp = lambda *arg, **kwargs: kmf.get_ovlp(*arg, **kwargs)
-            self.get_hcore = lambda *arg, **kwargs: kmf.get_hcore(*arg, **kwargs)
-            self.get_j = lambda *arg, **kwargs: kmf.get_j(*arg, **kwargs)
-            self.get_k = lambda *arg, **kwargs: kmf.get_k(*arg, **kwargs)
-            self.get_jk = lambda *arg, **kwargs: kmf.get_jk(*arg, **kwargs)
-            self.get_veff = lambda *arg, **kwargs: kmf.get_veff(*arg, **kwargs)
+            _fock = saved["get_fock"]
+            _dm = saved["make_rdm1"]
+            self.get_fock = lambda *a, **kw: _fock
+            self.make_rdm1 = lambda *a, **kw: _dm
 
-            def get_bands(*arg, **kwargs):
-                """Making a wrapper for the get_bands function"""
-                if "dm_kpts" in kwargs:
-                    return kmf.get_bands(*arg, **kwargs)
-                else:
-                    dm_kpts = self.make_rdm1()
-                    return kmf.get_bands(*arg, **kwargs, dm_kpts=dm_kpts)
+            self.eig = _bridge(kmf.eig, gpu)
+            self.get_ovlp = _bridge(kmf.get_ovlp, gpu)
+            self.get_hcore = _bridge(kmf.get_hcore, gpu)
+            self.get_j = _bridge(kmf.get_j, gpu)
+            self.get_k = _bridge(kmf.get_k, gpu)
+            self.get_jk = _bridge(kmf.get_jk, gpu)
+            self.get_veff = _bridge(kmf.get_veff, gpu)
+
+            _bands = _bridge(kmf.get_bands, gpu)
+
+            def get_bands(*a, **kw):
+                if "dm_kpts" not in kw:
+                    kw["dm_kpts"] = self.make_rdm1()
+                return _bands(*a, **kw)
 
             self.get_bands = get_bands
 
-            if hasattr(kmf, "max_memory"):
-                self.max_memory = kmf.max_memory
-            else:
-                self.max_memory = max_memory
+            self.max_memory = getattr(kmf, "max_memory", max_memory)
             self.with_df = kmf.with_df
 
-    final_kmf = fake_kmf(save_kmf)
+    final_kmf = fake_kmf(saved)
 
     return final_kmf
 

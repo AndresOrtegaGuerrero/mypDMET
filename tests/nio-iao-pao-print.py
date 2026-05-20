@@ -16,7 +16,7 @@ from pyscf.pbc import gto, scf, df
 
 from pdmet import dmet
 from pdmet.tools import tchkfile
-
+from pdmet.tools.mo_plot import plot_mo_projections, find_ao_indices
 
 lib.logger.TIMER_LEVEL = lib.logger.INFO
 
@@ -73,7 +73,7 @@ def main():
     print(f"\nKRHF energy = {khf.e_tot:.8f}\n")
 
     tchkfile.save_kmf(khf, chk_file)
-    kmf = tchkfile.load_kmf(cell, khf, kmesh, chk_file)
+    kmf = tchkfile.load_kmf(khf, chk_file)
 
     # ---- pDMET driver with IAO+PAO basis ------------------------------
     pdmet_obj = dmet.pDMET(
@@ -81,16 +81,26 @@ def main():
         kmf,
         w90=None,
         lo_method="iao+pao",
-        solver="HF",
+        solver="CASSCF",
     )
-    pdmet_obj.lobasis.minao = "gth-dzvp"  # IAO reference (minimal)
+    pdmet_obj.lobasis.minao = {
+        "Ni": "gth-szv-molopt-sr",
+        "O": "gth-szv",
+    }  # IAO reference (minimal)
     pdmet_obj.emb.impCluster = [1]  # Ni atom (1-indexed)
     pdmet_obj.emb.imp_orbital_filter = {"Ni": ["3d"]}  # only Ni 3d as impurity
+    pdmet_obj.solver.twoS = 0
+    pdmet_obj.solver.cas = (2, 2)
     pdmet_obj.initialize()
 
+    pdmet_obj.one_shot()
     out_dir = os.path.join(here, "nio_lo_xsf")
     os.makedirs(out_dir, exist_ok=True)
     pdmet_obj.plot(orb="lo", grid=[40, 40, 40], path=out_dir, fmt="xsf")
+    projections = {"Ni 3d": find_ao_indices(cell, "Ni", "3d")}
+    _ = plot_mo_projections(
+        kmf, projections, title="Ni 3d projections", savepath="ni3d_test.png"
+    )
 
     print(f"\nLO XSF files in: {out_dir}")
     print("\nDone.")
