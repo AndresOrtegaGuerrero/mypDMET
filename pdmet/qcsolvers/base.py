@@ -70,24 +70,29 @@ class BaseSolver:
         return lib.einsum("Lij,Lkl->ijkl", self.B, self.B, optimize=True)
 
     def _ensure_eri(self, mf=None):
-        """Lazily assemble the embedding 4-index ERI on a mean-field object.
+        """Ensure a mean-field object has embedding ERIs in ``mf._eri``.
 
-        Some pyscf paths (plain FCI, mrpt.NEVPT) have no DF integral
-        formulation: they read `mf._eri` directly. When the mean-field is our
-        DF-wrapped object, `_eri` is None and they fall back to
-        `mf.mol.intor('int2e')` on the dummy molecule, which is wrong.
+        Some PySCF paths (e.g. FCI, NEVPT2) access ``mf._eri`` directly and, if it is
+        missing, incorrectly evaluate ``int2e`` on the dummy embedding molecule. This
+        helper lazily builds the embedding ERI
 
-        This helper rebuilds V = sum_L B_Lij B_Lkl in the embedding space
-        (small: nemb^4, not nao^4), packs it 8-fold, and assigns it to
-        `mf._eri`. Idempotent — if a valid float64 _eri is already there,
-        nothing happens.
+            (ij|kl) = Σ_L B_Lij B_Lkl
+
+        from the DF factors and stores the 8-fold packed result in ``mf._eri``.
+
+        The ERI is assembled directly in packed form (no dense ``nemb^4`` tensor),
+        reducing peak memory to ~``nemb^4/4``. Construction remains O(``nemb^4``) in
+        the embedding size. For large embeddings, prefer DMRG with compressed NEVPT2
+        (``use_compress_nevpt2=True``), which avoids ``_eri`` entirely.
+
+        The operation is idempotent: if ``mf._eri`` already contains a valid
+        ``float64`` array, no work is done.
 
         Parameters
         ----------
         mf : pyscf mean-field, optional
-            Target mean-field to attach _eri to. Defaults to `self.mf`.
-            Pass a different one for NEVPT2 helpers that create a fresh
-            CASCI(self.mf, ...) and need _eri on that mc's _scf.
+            Mean-field object to receive ``_eri``. Defaults to ``self.mf``. Useful
+            when attaching ERIs to temporary CASCI/NEVPT2 mean-field objects.
         """
         from pyscf import ao2mo
 
@@ -98,8 +103,13 @@ class BaseSolver:
             and getattr(mf._eri, "dtype", None) == np.float64
         ):
             return  # already populated, nothing to do
-        V = lib.einsum("Lij,Lkl->ijkl", self.B, self.B, optimize=True)
-        mf._eri = ao2mo.restore(8, V, self.Norb)
+        # Direct packed build: pack the symmetric (i,j) pair index of B once,
+        # then (ij|kl) = B_sym^T @ B_sym is already the 4-fold-packed ERI; no
+        # dense Norb^4 intermediate. restore(8) gives the 8-fold _eri pyscf
+        # consumes. Identical numbers to the dense einsum, lower peak memory.
+        B_sym = lib.pack_tril(np.asarray(self.B))  # (naux, npair=Norb(Norb+1)/2)
+        eri_s4 = lib.dot(B_sym.T, B_sym)  # (npair, npair) 4-fold-packed ERI
+        mf._eri = ao2mo.restore(8, eri_s4, self.Norb)
 
     def _setup_mf(self):
         """Inject the embedding Hamiltonian and run the SCF using density fitting.

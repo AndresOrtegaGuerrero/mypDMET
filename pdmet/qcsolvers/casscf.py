@@ -34,6 +34,7 @@ class CASSCFSolver(BaseCASSolver):
         RDM1     : (Norb, Norb) — 1-RDM in local basis
         """
         self._setup_mf()
+        self._reset_ntos()
         cas_nelec, cas_norb = self._cas_sizes()
         self._apply_state_averaging(state_specific_, state_average_, state_average_mix_)
         self._setup_cas_object(self.mc, cas_norb, cas_nelec)
@@ -143,13 +144,25 @@ class CASSCFSolver(BaseCASSolver):
         RDM1 = lib.einsum("i,ijk->jk", w, RDM1s)
         e_cell = lib.einsum("i,i->", w, e_cells)
         self.SS = np.mean(ss)
+
+        # NTOs straight from the state-averaged CASSCF. Skip when nevpt2_roots is
+        # set -- the NEVPT2 path computes them, and doing both would double them.
+        # Only valid within one (na, nb) sector; state-average-mix mixes sectors.
+        if self.settings.nto and self.settings.nevpt2_roots is None:
+            if all(n == nelecas_list[0] for n in nelecas_list):
+                self._compute_ntos(self.mc, fcivec, list(range(len(fcivec))), cas_norb)
+            else:
+                print(
+                    "[nto] skipping NTOs for state-average-mix (mixed spin "
+                    "sectors); spin-resolved NTOs are not implemented yet."
+                )
         return e_cell, RDM1
 
     def _run_nevpt2_mix(self, cas_norb, cas_nelec, e_tot):
         from copy import copy
 
         print("=" * 45)
-        e_casci_nevpt2, t_dm1s = [], []
+        e_casci_nevpt2 = []
 
         solvers = self.mc.fcisolver.fcisolvers
         nevpt2_roots = self.settings.nevpt2_roots
@@ -165,16 +178,17 @@ class CASSCFSolver(BaseCASSolver):
             mc_ci.fcisolver.nroots = nevpt2_nroots[i]
             fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-            res, tdm = self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
-            e_casci_nevpt2.extend(res)
-            t_dm1s.extend(tdm)
+            # NTOs from the pristine wavefunction, BEFORE NEVPT2 canonicalizes.
+            self._compute_ntos(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
+            e_casci_nevpt2.extend(
+                self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
+            )
 
         print("=" * 45)
-        return (e_tot, np.asarray(e_casci_nevpt2), t_dm1s)
+        return (e_tot, np.asarray(e_casci_nevpt2))
 
     def _run_nevpt2_standard(self, cas_norb, cas_nelec, e_tot):
         print("=" * 45)
-        e_casci_nevpt2, t_dm1s = [], []
 
         spin = (
             self.settings.nevpt2_spin
@@ -195,9 +209,9 @@ class CASSCFSolver(BaseCASSolver):
 
         fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-        e_casci_nevpt2, t_dm1s = self._nevpt2_fci_roots(
-            mc_ci, fcivec, nevpt2_roots, cas_norb
-        )
+        # NTOs from the pristine wavefunction, BEFORE NEVPT2 canonicalizes it.
+        self._compute_ntos(mc_ci, fcivec, nevpt2_roots, cas_norb)
+        e_casci_nevpt2 = self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots, cas_norb)
 
         print("=" * 45)
-        return (e_tot, np.asarray(e_casci_nevpt2), t_dm1s)
+        return (e_tot, np.asarray(e_casci_nevpt2))
