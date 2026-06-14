@@ -31,6 +31,7 @@ class DMRGBlock2Solver(BaseCASSolver):
         state_average_mix_=None,
     ):
         self._setup_mf()
+        self._reset_ntos()
         cas_nelec, cas_norb = self._cas_sizes()
         self._apply_state_averaging(state_specific_, state_average_, state_average_mix_)
         self._setup_cas_object(self.mc, cas_norb, cas_nelec)
@@ -62,6 +63,10 @@ class DMRGBlock2Solver(BaseCASSolver):
                 e_tot = self._run_nevpt2_mix(cas_norb, cas_nelec, e_tot)
             else:
                 e_tot = self._run_nevpt2_standard(cas_norb, cas_nelec, e_tot)
+        elif self.settings.nto and self.settings.nroots > 1:
+            # NTOs without NEVPT2: a dedicated multi-root DMRG CASCI with
+            # tran_onepdm emits the transition 1-RDM files we then SVD.
+            self._compute_dmrg_ntos(cas_norb, cas_nelec)
 
         return e_cell, e_tot, RDM1
 
@@ -161,7 +166,7 @@ class DMRGBlock2Solver(BaseCASSolver):
 
     def _run_nevpt2_mix(self, cas_norb, cas_nelec, e_tot):
         print("=" * 45)
-        e_casci_nevpt2, t_dm1s = [], []
+        e_casci_nevpt2 = []
 
         solvers = self.mc.fcisolver.fcisolvers
         nevpt2_roots = self.settings.nevpt2_roots
@@ -196,18 +201,16 @@ class DMRGBlock2Solver(BaseCASSolver):
                     self.mc.mo_coeff, ci=ir, cas_natorb=False
                 )
 
-            res, tdm = self._nevpt2_from_mc_ci(
-                mc_ci, ms, cs, es, nevpt2_roots[i], cas_norb
+            e_casci_nevpt2.extend(
+                self._nevpt2_from_mc_ci(mc_ci, ms, cs, es, nevpt2_roots[i], cas_norb)
             )
-            e_casci_nevpt2.extend(res)
-            t_dm1s.extend(tdm)
 
         print("=" * 45)
-        return (e_tot, np.asarray(e_casci_nevpt2), t_dm1s)
+        return (e_tot, np.asarray(e_casci_nevpt2))
 
     def _run_nevpt2_standard(self, cas_norb, cas_nelec, e_tot):
         print("=" * 45)
-        e_casci_nevpt2, t_dm1s = [], []
+        e_casci_nevpt2 = []
 
         spin = (
             self.settings.nevpt2_spin
@@ -241,12 +244,12 @@ class DMRGBlock2Solver(BaseCASSolver):
                 self.mc.mo_coeff, ci=ir, cas_natorb=False
             )
 
-        e_casci_nevpt2, t_dm1s = self._nevpt2_from_mc_ci(
+        e_casci_nevpt2 = self._nevpt2_from_mc_ci(
             mc_ci, ms, cs, es, nevpt2_roots, cas_norb
         )
 
         print("=" * 45)
-        return (e_tot, np.asarray(e_casci_nevpt2), t_dm1s)
+        return (e_tot, np.asarray(e_casci_nevpt2))
 
     def _nevpt2_from_mc_ci(self, mc_ci, ms, cs, es, roots, cas_norb):
         # mrpt.NEVPT has no DF integral path; the compressed (MPS-NEVPT2)
@@ -255,7 +258,7 @@ class DMRGBlock2Solver(BaseCASSolver):
         if not self.settings.dmrg.use_compress_nevpt2:
             self._ensure_eri(mc_ci._scf)
 
-        e_casci_nevpt2, t_dm1s = [], []
+        e_casci_nevpt2 = []
 
         # Apply NEVPT2 correction
         for root in roots:
@@ -277,11 +280,69 @@ class DMRGBlock2Solver(BaseCASSolver):
                 if not isinstance(mc_ci.e_tot, np.ndarray)
                 else mc_ci.e_tot[root]
             )
-            t_dm1s.append(self._trans_dmrg1(mc_ci, root))
+            # NTOs from block2's transition 1-RDM file (written during the
+            # pristine DMRG run, so safe from NEVPT2 canonicalization).
+            self._store_dmrg_nto(mc_ci, root)
             e_casci_nevpt2.append([ss, e_cas_root, e_cas_root + e_corr])
         self._print_ci_dmrg(mc_ci)
 
-        return e_casci_nevpt2, t_dm1s
+        return e_casci_nevpt2
+
+    def _compute_dmrg_ntos(self, cas_norb, cas_nelec):
+        """NTOs for a multi-root DMRG run WITHOUT NEVPT2 (settings.nto)."""
+        spin = self.settings.twoS
+        nroots = self.settings.nroots
+        nelecb = (cas_nelec - spin) // 2
+        neleca = cas_nelec - nelecb
+        mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
+        mc_ci.fcisolver = self._get_dmrg_solver(spin, nroots, path="casci")
+        if nroots > 1:
+            mc_ci.fcisolver.block_extra_keyword.append("tran_onepdm")
+        if self.settings.e_shift is not None:
+            ss = 0.5 * spin * (0.5 * spin + 1)
+            mc_ci.fix_spin_(shift=self.settings.e_shift, ss=ss)
+        mc_ci.kernel(self.mc.mo_coeff)
+        for root in range(nroots):
+            self._store_dmrg_nto(mc_ci, root)
+
+    def _store_dmrg_nto(self, mc_ci, root):
+        """Load the DMRG ground->root transition 1-RDM, SVD into NTOs, and
+        accumulate (t_dm1_emb, nto_info) onto self.t_dm1s / self.ntos_per_root."""
+        t_dm1_emb, nto_info = self._dmrg_transition_dm1(mc_ci, root)
+        if self.t_dm1s is None:
+            self.t_dm1s, self.ntos_per_root = [], []
+        self.t_dm1s.append(t_dm1_emb)
+        self.ntos_per_root.append(nto_info)
+
+    def _dmrg_transition_dm1(self, mc_ci, root):
+        """DMRG transition 1-RDM (block2 tran_onepdm output) + NTO decomposition.
+
+        Returns (t_dm1_emb, nto_info). If the file is missing, returns
+        (None, empty-nto) so downstream get_ntos shows '0 pairs' rather than
+        crashing.
+        """
+        path = mc_ci.fcisolver.scratchDirectory
+        filepath = path + f"/node0/1pdm-0-{root}.npy"
+        if not os.path.isfile(filepath):
+            print(f"  Warning: transition 1-RDM file not found: {filepath}")
+            empty = {"lambdas": np.array([]), "V_hole": None, "U_part": None}
+            return None, empty
+
+        t_dm1_cas = np.load(filepath)
+        # block2 stores the spin-resolved blocks as (2, ncas, ncas); the NTO
+        # convention uses the TOTAL spatial density (alpha + beta), matching the
+        # FCI trans_rdm1 path. Collapse a leading spin axis if present.
+        if t_dm1_cas.ndim == 3:
+            t_dm1_cas = t_dm1_cas.sum(axis=0)
+        lam, V_cas, U_cas = self._ntos_from_tdm1_cas(t_dm1_cas)
+        orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
+        t_dm1_emb = orbcas @ t_dm1_cas @ orbcas.T
+        nto_info = {
+            "lambdas": lam,
+            "V_hole": self._fix_orbital_signs(orbcas @ V_cas),
+            "U_part": self._fix_orbital_signs(orbcas @ U_cas),
+        }
+        return t_dm1_emb, nto_info
 
     def _print_ci_dmrg(self, mc_ci):
         from pyblock2.driver.core import DMRGDriver, SymmetryTypes
@@ -317,17 +378,3 @@ class DMRGBlock2Solver(BaseCASSolver):
         # for ii, ix in enumerate(idx):
         #     det = "".join([occ_str[x] for x in dets[ix]])
         #     print("DET %10d" % ii, det, " = %20.15f" % vals[ix])
-
-    def _trans_dmrg1(self, mc_ci, root):
-        """Transition 1-RDM between ground state and excited root."""
-        path = mc_ci.fcisolver.scratchDirectory
-        file = f"/node0/1pdm-0-{root}.npy"
-        filepath = path + file
-
-        if not os.path.isfile(filepath):
-            print(f"  Warning: transition 1-RDM file not found: {filepath}")
-            return None
-        t_dm1 = np.load(filepath)
-
-        orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
-        return orbcas @ t_dm1 @ orbcas.T

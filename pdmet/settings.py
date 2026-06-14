@@ -278,6 +278,10 @@ class SolverSettings:
     nevpt2_roots: Optional[list] = None  # field(default_factory=list)
     nevpt2_nroots: Optional[int] = None  # int = 10
     nevpt2_spin: Optional[int] = None
+    nto: bool = False  # compute NTOs from the multi-root transition densities
+    nto_export: bool = False  # also write NTO cubes at the end of one_shot()/run()?
+    nto_npairs: int = 2  # how many top (donor, acceptor) pairs per root
+    nto_lambda_floor: float = 1e-3  # skip pairs below this weight even if asked
     mc_dup: Optional[bool] = (
         None  # Placeholder, I need to figure out how this variable is used.
     )
@@ -311,6 +315,25 @@ class SolverSettings:
                 )
             if self.nevpt2_spin is None:
                 self.nevpt2_spin = self.twoS
+
+        if self.nto or self.nto_export:
+            # NTOs need a multi-root wavefunction (ground + >=1 excited root);
+            # NEVPT2 is not required.
+            multi_root = (
+                self.nevpt2_roots is not None
+                or self.nroots > 1
+                or self.state_average_ is not None
+                or self.state_average_mix_ is not None
+            )
+            if not multi_root:
+                raise ValueError(
+                    "nto/nto_export require a multi-root calculation (set "
+                    "nevpt2_roots, nroots>1, state_average_, or state_average_mix_)."
+                )
+            if self.nto_npairs < 1:
+                raise ValueError("nto_npairs must be >= 1.")
+            if self.nto_lambda_floor < 0:
+                raise ValueError("nto_lambda_floor must be non-negative.")
 
         if self.nroots > 1:
             if self.state_percent is not None:
