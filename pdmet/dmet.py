@@ -102,6 +102,7 @@ class pDMET:
         self.ntos_per_root = None  # NTO decomposition per root
         self.e_tot = 0.0  # energy per unit cell
         self.e_corr = 0.0
+        self.e_madelung = 0.0  # finite-size exchange constant for an exxdiv guess
         self.nelec_per_cell = None
 
         # Others
@@ -142,13 +143,35 @@ class pDMET:
                         "WARNING: Provide density fitting file in initiating kmf object or make sure the saved kmf object is using the same density fitting"
                     )
 
-        if self.kmf.exxdiv is not None:
-            raise Exception(
-                "The pDMET has not been developed for the RHF calculation with exxdiv is not None"
-            )
-            # TODO: if self.kmf.exxdiv != None, consider to run two SCF (one with and one without exx treatment
-            # if self.kmf.exxdiv == 'ewald': actOEI_kpts += self.exxdiv_ewald(cell)
-            # to get the finite correction, see https://github.com/pyscf/pyscf/issues/250
+        self._record_exxdiv()
+
+    def _record_exxdiv(self):
+        """Ingest an exxdiv != None starting guess, then embed in bare Coulomb.
+
+        The Madelung term is a constant shift on the occupied subspace: it leaves
+        every MO, the density, and the Schmidt bath untouched and only moves the
+        total energy. So we keep the converged orbitals, capture the exact energy
+        shift, strip the patch from ``kmf`` (no-op on the density), and re-add the
+        constant ``e_madelung`` to the final DMET energy.
+        """
+        self.exxdiv = self.kmf.exxdiv
+        self.e_madelung = 0.0
+        if self.exxdiv is None:
+            self.madelung = 0.0
+            return
+
+        from pyscf.pbc import tools
+
+        self.madelung = tools.pbc.madelung(self.cell, self.kmf.kpts)
+        # Exact constant straight from PySCF: (energy with patch) - (bare energy on
+        # the same converged density). No sign/convention guessing.
+        e_ewald = self.kmf.e_tot
+        self.kmf.exxdiv = None  # embed bare; orbitals are fixed -> density unchanged
+        self.e_madelung = e_ewald - self.kmf.energy_tot()
+        tprint.print_msg(
+            f"exxdiv='{self.exxdiv}' guess ingested; embedding in bare Coulomb "
+            f"(e_madelung={self.e_madelung:.6f} Eh re-added to E_tot)"
+        )
 
     def _detect_rohf(self):
         """Determine if the mean-field is ROHF and validate spin settings."""
@@ -633,6 +656,10 @@ class pDMET:
         else:
             self.nelec_per_cell = np.trace(RDM1[: self.Nimp, : self.Nimp])
             self.e_tot = e_cell
+
+        # Re-add the finite-size exchange (Madelung) constant for an exxdiv guess.
+        # Zero unless an exxdiv != None mean field was ingested.
+        self.e_tot = self.e_tot + self.e_madelung
 
         return self.nelec_per_cell
 
