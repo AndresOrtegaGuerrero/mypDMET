@@ -16,7 +16,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-Email: Hung Q. Pham <pqh3.14@gmail.com>
 """
 
 import datetime
@@ -27,8 +26,6 @@ def print_header():
     print("-----------------------------------------------------------------")
     print("   pDMET: Density Matrix Embedding Theory for Periodic Systems")
     print(f"                            Version: {pdmet.__version__}")
-    print("                         Author: Hung Q. Pham")
-    print("                       Email: pqh3.14@gmail.com")
     print(
         f"                 Current time: {datetime.datetime.now().strftime('%Y/%m/%d - %H:%M:%S')}"
     )
