@@ -127,13 +127,11 @@ def load_kmf(kmf, chkfile, max_memory=4000, gpu=None):
 
     class fake_kmf:
         def __init__(self, saved):
-            if saved["exxdiv"] in ("None", b"None"):
-                self.exxdiv = None
-                kmf.exxdiv = None
-            else:
-                self.exxdiv = saved["exxdiv"]
-                kmf.exxdiv = saved["exxdiv"]
-
+            ex = saved["exxdiv"]
+            if isinstance(ex, bytes):
+                ex = ex.decode()
+            self.exxdiv = None if ex == "None" else ex  # wrapper: original
+            kmf.exxdiv = None  # real kmf: bare J/K
             self._is_ROHF = is_krohf(kmf)
 
             # Stored data
