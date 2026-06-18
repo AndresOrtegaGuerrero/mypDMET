@@ -163,14 +163,14 @@ class pDMET:
         from pyscf.pbc import tools
 
         self.madelung = tools.pbc.madelung(self.cell, self.kmf.kpts)
-        # Exact constant straight from PySCF: (energy with patch) - (bare energy on
-        # the same converged density). No sign/convention guessing.
-        e_ewald = self.kmf.e_tot
+        # Closed-form Ewald/Madelung energy constant for a full-HF-exchange
+        # (RHF/ROHF) reference:  E_madelung = -0.5 * madelung * nelec_per_cell.
         self.kmf.exxdiv = None  # embed bare; orbitals are fixed -> density unchanged
-        self.e_madelung = e_ewald - self.kmf.energy_tot()
+        self.e_madelung = -0.5 * self.madelung * self.cell.nelectron
         tprint.print_msg(
             f"exxdiv='{self.exxdiv}' guess ingested; embedding in bare Coulomb "
-            f"(e_madelung={self.e_madelung:.6f} Eh re-added to E_tot)"
+            f"(madelung={self.madelung:.6f}, e_madelung={self.e_madelung:.6f} Eh "
+            f"re-added to E_tot)"
         )
 
     def _detect_rohf(self):
@@ -713,8 +713,7 @@ class pDMET:
             self.e_emb = e_solver
             self.e_imp = e_cell - self.local.e_core
 
-        # NTO cube auto-export works for ANY path that produced NTOs (NEVPT2 or
-        # the standalone nto flag), now that they live on solver attributes.
+        # NTO cube auto-export works for ANY path that produced NTOs.
         if self.solver.nto_export and self.ntos_per_root is not None:
             self._auto_export_ntos()
 
@@ -1282,8 +1281,6 @@ class pDMET:
             # ROHF (S>0):    D_mf = 2 V_dc V_dc^T + V_so V_so^T
             #                V_dc = top (N-2S)/2 NOs (doubly occupied)
             #                V_so = next 2S NOs      (singly occupied)
-            # The ROHF branch preserves the {2,1,0} eigenvalue structure that
-            # the ROHF Schmidt bath (Nbath = Nimp + 2S) expects on the next cycle.
             global_mf_1RDM = self._project_to_mf_density(
                 global_corr_1RDM, self.Nelec_total, self.solver.twoS
             )
