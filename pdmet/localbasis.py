@@ -651,7 +651,9 @@ class Local:
                 self.cell, dm_kpts=ao_core_kpts, hermi=1, kpts=self.kpts, kpts_band=None
             )
 
-        core_JK = lib.einsum("kum,kuv,kvn->mn", ao2core.conj(), ao_core_JK, ao2core)
+        core_JK = lib.einsum(
+            "kum,kuv,kvn->mn", ao2core.conj(), ao_core_JK, ao2core, optimize=True
+        )
         self.is_real(core_JK)
         return core_JK.real
 

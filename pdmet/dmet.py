@@ -722,6 +722,9 @@ class pDMET:
         E_core = Tr[h_core * D_core] + 0.5 * Tr[JK_core * D_core]
         D_core is the MF 1-RDM projected onto core orbitals.
         """
+        import time
+
+        _t = time.time()
         ao2core = self.local.get_ao2core(self.core_orbs)
         lo2core = self.local.get_lo2core(self.core_orbs)
         core_OEI = self.local.get_core_OEI(ao2core)
@@ -731,12 +734,21 @@ class pDMET:
             lo2core, Nelec_in_core, self.loc_OEH_kpts
         )
         loc_core_1RDM = lib.einsum(
-            "kim,mn,kjn->kij", lo2core, core_1RDM, lo2core.conj()
+            "kim,mn,kjn->kij", lo2core, core_1RDM, lo2core.conj(), optimize=True
         )
+        tprint.print_msg(
+            "   [core] projections + core 1RDM = %.1fs" % (time.time() - _t)
+        )
+
+        _t = time.time()
         core_JK = self.local.get_core_JK(ao2core, loc_core_1RDM)
         core_energy = np.sum((core_OEI + 0.5 * core_JK) * core_1RDM).real
+        tprint.print_msg(
+            "   [core] get_core_JK (full-cell get_veff) = %.1fs" % (time.time() - _t)
+        )
 
         # Update modified 1-RDM for post-processing
+        _t = time.time()
         self.loc_OEH_kpts, self.loc_1RDM_kpts, self.loc_1RDM_R0 = (
             self.local.make_loc_1RDM(
                 0.0,
@@ -745,6 +757,9 @@ class pDMET:
                 dft_HF=None,
             )
         )
+        tprint.print_msg("   [core] make_loc_1RDM (eigh) = %.1fs" % (time.time() - _t))
+
+        _t = time.time()
         Norb = self.Nimp + self.Nbath
         self.loc_1RDM_R0_modified = self.loc_1RDM_R0.copy()
         self.loc_1RDM_R0_modified[0][:Norb, :Norb] = RDM1
@@ -753,7 +768,9 @@ class pDMET:
             self.local.ao2lo,
             self.loc_1RDM_R0_modified[0],
             self.local.ao2lo.conj()[0],
+            optimize=True,
         ).real
+        tprint.print_msg("   [core] AO-basis 1RDM einsum = %.1fs" % (time.time() - _t))
         # ------------------------------------------
         loc_core_1RDM_reshaped = loc_core_1RDM.real.reshape(1, self.Norbs, self.Norbs)
         return core_energy, loc_core_1RDM_reshaped
