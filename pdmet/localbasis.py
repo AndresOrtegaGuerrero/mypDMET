@@ -519,53 +519,43 @@ class Local:
         dft_HF=None,
     ):
         """
-        Construct 1-RDM at each k-point in the local basis given a u mat
-        mask is used for the Gamma-sampling case
+        Construct 1-RDM at each k-point in the local basis given a u mat.
+        mask4Gamma is used for the Gamma-sampling case.
         """
-        # Get modified mean-field Hamiltinian: h_tilder = h + u
+        # Modified mean-field Hamiltonian: h_tilde = h + u
         if OEH_type == "FOCK":
             OEH_kpts = self.loc_actFOCK_kpts + umat
+        elif mask4Gamma is not None:
+            # DF-like cost function, Gamma sampling
+            OEH_kpts = self.loc_actFOCK_kpts[0].copy()
+            OEH_kpts[mask4Gamma] = df_hamiltonian.get_OEH_kpts(
+                self, umat, xc_type=OEH_type, dft_HF=dft_HF
+            )[0][mask4Gamma]
+            OEH_kpts = OEH_kpts.reshape(-1, self.nlo, self.nlo)
         else:
-            # For DF-like cost function
-            if mask4Gamma is not None:
-                OEH_kpts = self.loc_actFOCK_kpts[0].copy()
-                OEH_kpts[mask4Gamma] = df_hamiltonian.get_OEH_kpts(
-                    self, umat, xc_type=OEH_type, dft_HF=dft_HF
-                )[0][mask4Gamma]
-                OEH_kpts = OEH_kpts.reshape(-1, self.nlo, self.nlo)
-            else:
-                OEH_kpts = df_hamiltonian.get_OEH_kpts(
-                    self, umat, xc_type=OEH_type, dft_HF=dft_HF
-                )
+            OEH_kpts = df_hamiltonian.get_OEH_kpts(
+                self, umat, xc_type=OEH_type, dft_HF=dft_HF
+            )
 
+        # eigh returns eigenvalues already in ascending order per k-point,
+        # so no re-sort is needed.
         eigvals, eigvecs = np.linalg.eigh(OEH_kpts)
-        idx_kpts = eigvals.argsort()
-        eigvals = np.asarray([eigvals[kpt][idx_kpts[kpt]] for kpt in range(self.Nkpts)])
-        eigvecs = np.asarray(
-            [eigvecs[kpt][:, idx_kpts[kpt]] for kpt in range(self.Nkpts)]
-        )
+
+        if get_band:
+            return eigvals, eigvecs
+        if get_ham:
+            return OEH_kpts, eigvals, eigvecs
 
         if self._is_KROHF:
             mo_occ = helper.get_occ_rohf(self.nelec, eigvals)
         else:
             mo_occ = helper.get_occ_rhf(self.nelec_total, eigvals)
 
-        loc_OED = np.asarray(
-            [
-                np.dot(
-                    eigvecs[kpt][:, mo_occ[kpt] > 0] * mo_occ[kpt][mo_occ[kpt] > 0],
-                    eigvecs[kpt][:, mo_occ[kpt] > 0].T.conj(),
-                )
-                for kpt in range(self.Nkpts)
-            ],
-            dtype=np.complex128,
-        )
-        if get_band:
-            return eigvals, eigvecs
-        elif get_ham:
-            return OEH_kpts, eigvals, eigvecs
-        else:
-            return OEH_kpts, loc_OED
+        # mo_occ is 0 on virtuals, so no occupied-orbital masking is needed:
+        # loc_OED[k] = (C[k] * n[k]) @ C[k]^H
+        loc_OED = np.einsum("kij,kj,klj->kil", eigvecs, mo_occ, eigvecs.conj())
+
+        return OEH_kpts, loc_OED
 
     def make_loc_1RDM(self, umat, mask4Gamma, OEH_type="FOCK", dft_HF=None):
         """
