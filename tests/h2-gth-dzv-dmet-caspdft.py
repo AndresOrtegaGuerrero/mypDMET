@@ -1,0 +1,104 @@
+"""
+Small CASPDFT-in-DMET smoke test (H2, gth-dzv, Gamma).
+
+Adapted from h2-gth-dzv-dmet-pdft.py. Purpose:
+  1. Exercise the CASPDFT solver end-to-end at Gamma / RHF.
+  2. Verify the memory guard added to localbasis.Local: with OEH_type == "FOCK"
+     (the HF/ROHF default), the DFT-cost block (dm_kpts/vj/vk/h_core/kks) must
+     NOT be built, and CASPDFT must still run because it builds its own KS/grids.
+
+Run manually (needs pyscf, pywannier90/wannier90, and a writable cwd for gdf.h5).
+"""
+
+import os
+import pywannier90
+import numpy as np
+from pyscf import lib
+from pyscf.pbc import gto, scf, df
+
+from pdmet import dmet
+from pdmet.tools import tchkfile
+
+lib.logger.TIMER_LEVEL = lib.logger.INFO
+
+cell = gto.Cell()
+cell.atom = """H 5 5 4; H 5 5 5"""
+cell.basis = "gth-dzv"
+cell.spin = 0
+cell.max_memory = 10000
+cell.a = np.eye(3) * 10
+cell.verbose = 5
+cell.build()
+
+"""================================"""
+""" Build GDF """
+"""================================"""
+kmesh = [1, 1, 1]
+kpts = cell.make_kpts(kmesh)
+if not os.path.exists("gdf.h5"):
+    gdf = df.GDF(cell, kpts)
+    gdf._cderi_to_save = "gdf.h5"
+    gdf.build()
+
+"""================================"""
+""" Read the HF wave function """
+"""================================"""
+khf = scf.KRHF(cell, kpts).density_fit()
+khf.with_df._cderi = "gdf.h5"
+khf.exxdiv = None
+khf.run()
+tchkfile.save_kmf(khf, "chk_HF")
+
+"""================================"""
+""" Construct MLWFs """
+"""================================"""
+kmf = tchkfile.load_kmf(khf, "chk_HF")
+num_wann = cell.nao
+keywords = """
+num_iter = 5000
+begin projections
+random
+H: s
+end projections
+guiding_centres = .true.
+"""
+w90 = pywannier90.W90(kmf, cell, kmesh, num_wann, other_keywords=keywords)
+w90.kernel()
+
+kmf = tchkfile.load_kmf(khf, "chk_HF")
+
+"""================================"""
+""" Run DMET with a CASPDFT solver """
+"""================================"""
+pdmet = dmet.pDMET(
+    cell,
+    kmf,
+    w90,
+    lo_method="wannier",
+    solver="CASPDFT",
+)
+pdmet.lobasis.minao = "gth-dzv"
+pdmet.emb.impCluster = [1]
+pdmet.emb.imp_orbital_filter = {"H": ["1s", "2s", "2px", "2py", "2pz"]}
+pdmet.emb.impOrbs_threshold = 1.5
+
+pdmet.solver.twoS = 0
+pdmet.solver.cas = (2, 2)
+pdmet.solver.e_shift = 0.5
+pdmet.solver.otxc = "tPBE"  # on-top functional for CASPDFT
+
+pdmet.initialize()
+
+# --- Guard check: OEH_type defaults to FOCK, so the DFT-cost arrays must be
+#     absent. CASPDFT builds its own KS/grids, so this must not break it. ---
+for attr in ("kks", "vj", "vk", "dm_kpts", "h_core"):
+    assert not hasattr(pdmet.local, attr), (
+        f"local.{attr} was built despite OEH_type == FOCK; memory guard regressed"
+    )
+print("[guard] OK: DFT-cost block skipped for OEH_type == FOCK")
+
+e_tot = pdmet.one_shot()
+
+assert np.isfinite(pdmet.e_tot), "CASPDFT one_shot produced a non-finite energy"
+print(f"[caspdft] E_tot = {pdmet.e_tot:.10f}")
+print("[caspdft] one_shot completed; CASPDFT runs without the DFT-cost block.")

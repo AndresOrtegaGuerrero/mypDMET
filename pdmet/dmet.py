@@ -206,7 +206,12 @@ class pDMET:
         self.Nkpts = self.kpts.shape[0]
 
         self.local = localbasis.Local(
-            self.cell, self.kmf, self.lobasis, self._is_ROHF, self.emb.xc_omega
+            self.cell,
+            self.kmf,
+            self.lobasis,
+            self._is_ROHF,
+            self.emb.xc_omega,
+            OEH_type=self.emb.OEH_type,
         )
         self.e_core = self.local.e_core
 

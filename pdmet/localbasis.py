@@ -326,7 +326,9 @@ def make_iao_pao_kbasis(
 
 
 class Local:
-    def __init__(self, cell, kmf, lobasis, is_KROHF=False, xc_omega=0.2):
+    def __init__(
+        self, cell, kmf, lobasis, is_KROHF=False, xc_omega=0.2, OEH_type="FOCK"
+    ):
         """
         Args:
             kmf        : a k-dependent mean-field wf
@@ -452,21 +454,24 @@ class Local:
         self.fullfock_kpts = kmf.get_fock(s1e=kmf.get_ovlp(), dm=kmf.make_rdm1())
         self.loc_actFOCK_kpts = self.ao_2_loc(self.fullfock_kpts, self.ao2lo)
 
-        # DF-like DMET
+        # DF-like DMET: the effective-Hamiltonian (DF/DFT) cost function needs the
+        # mean-field J/K, density and a KS object. These are consumed *only* by
+        # df_hamiltonian.get_OEH_kpts, which runs solely when OEH_type != "FOCK".
         self.xc_omega = xc_omega
-        self.dm_kpts = self.kmf.make_rdm1()
-        self.vj, self.vk = self.kmf.get_jk(dm_kpts=self.dm_kpts)
-        self.h_core = self.kmf.get_hcore()
-        if self._is_KROHF:
-            self.kks = scf.KROKS(self.cell, self.kpts).density_fit()
-        else:
-            self.kks = scf.KKS(self.cell, self.kpts).density_fit()
-        self.kks.with_df._cderi = self.kmf.with_df._cderi
-        if self.xc_omega is not None:
-            self.vklr = self.kmf.get_k(
-                self.cell, self.dm_kpts, 1, self.kpts, None, omega=self.xc_omega
-            )
-            self.vksr = self.vk - self.vklr
+        if OEH_type != "FOCK":
+            self.dm_kpts = self.kmf.make_rdm1()
+            self.vj, self.vk = self.kmf.get_jk(dm_kpts=self.dm_kpts)
+            self.h_core = self.kmf.get_hcore()
+            if self._is_KROHF:
+                self.kks = scf.KROKS(self.cell, self.kpts).density_fit()
+            else:
+                self.kks = scf.KKS(self.cell, self.kpts).density_fit()
+            self.kks.with_df._cderi = self.kmf.with_df._cderi
+            if self.xc_omega is not None:
+                self.vklr = self.kmf.get_k(
+                    self.cell, self.dm_kpts, 1, self.kpts, None, omega=self.xc_omega
+                )
+                self.vksr = self.vk - self.vklr
 
     def _verify_loaded_lo(self):
         """Sanity-check that an IAO+PAO chkfile matches the current cell."""
@@ -889,9 +894,11 @@ class Local:
     def get_emb_mf_1RDM(self, emb_FOCK, Nelec_in_emb):
         """Get k-space 1-RDM  or derivative 1-RDM in the embedding basis"""
         npairs = Nelec_in_emb // 2
+        # eigh returns eigenvalues ascending, so the lowest npairs columns are
+        # already the occupied orbitals - no re-sort needed.
         sigma, C = np.linalg.eigh(emb_FOCK)
-        C = C[:, sigma.argsort()]
-        emb_mf_1RDM = 2 * np.dot(C[:, :npairs], C[:, :npairs].T.conj())
+        Cocc = C[:, :npairs]
+        emb_mf_1RDM = 2 * np.dot(Cocc, Cocc.T.conj())
         return emb_mf_1RDM
 
     def get_emb_guess_1RDM(self, emb_FOCK, Nelec_in_emb, Nimp, chempot):
@@ -901,9 +908,10 @@ class Local:
         chempot_vector = np.zeros(Nemb)
         chempot_vector[:Nimp] = chempot
         emb_FOCK = emb_FOCK - np.diag(chempot_vector)
+        #      v lowest npairs columns are occupied.
         sigma, C = np.linalg.eigh(emb_FOCK)
-        C = C[:, sigma.argsort()]
-        DMguess = 2 * np.dot(C[:, :npairs], C[:, :npairs].T.conj())
+        Cocc = C[:, :npairs]
+        DMguess = 2 * np.dot(Cocc, Cocc.T.conj())
         return DMguess
 
     def get_core_mf_1RDM(self, lo2core, Nelec_in_core, loc_OEH_kpts):
@@ -911,9 +919,10 @@ class Local:
         npairs = Nelec_in_core // 2
         core_FOCK = lib.einsum("kim,kij,kjn->mn", lo2core.conj(), loc_OEH_kpts, lo2core)
         self.is_real(core_FOCK)
+        # eigh returns eigenvalues ascending; lowest npairs columns are occupied.
         sigma, C = np.linalg.eigh(core_FOCK.real)
-        C = C[:, sigma.argsort()]
-        core_mf_1RDM = 2 * np.dot(C[:, :npairs], C[:, :npairs].T.conj())
+        Cocc = C[:, :npairs]
+        core_mf_1RDM = 2 * np.dot(Cocc, Cocc.T.conj())
         return core_mf_1RDM
 
     def get_1RDM_Rs(self, loc_1RDM_R0):
