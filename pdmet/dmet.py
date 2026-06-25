@@ -109,6 +109,7 @@ class pDMET:
         self.chkfile = "pdmet.chk"  # Save integrals in the WFs basis as well as chem potential and uvec
         self.restart = False  # Run a calculation using saved chem potential and uvec
         self._cycle = 1
+        self._scf_cycle = 0
 
     def initialize(self):
         """
@@ -122,13 +123,14 @@ class pDMET:
         self._initialize_impurity()
         self._initialize_embedding_settings()
         self._initialize_correlation_potential()
+        if self.restart:
+            self._initialize_restart()
         self._initialize_scf_settings()
         self._initialize_qcsolver()
         tprint.print_msg("Initializing ... DONE")
 
     def _load_checkfiles(self):
         """Load the saved kmf object if a chkfile is set."""
-        assert (self.chkfile is None) or isinstance(self.chkfile, str)
         if self.kmf_chkfile is not None and hasattr(self.kmf.with_df, "_cderi"):
             self.kmf = tchkfile.load_kmf(
                 self.kmf,
@@ -500,26 +502,36 @@ class pDMET:
         self.umat = self.uvec2umat(self.uvec)
 
     def _initialize_restart(self):
-        self.restart_success = False
+        """Load a checkpoint into live DMET"""
+        if not tunix.check_exist(self.chkfile):
+            tprint.print_msg(
+                f"-> Restart requested but chkfile {self.chkfile} not found. Starting from scratch."
+            )
+            return
 
-        if self.chkfile is not None and self.restart:
-            if tunix.check_exist(self.chkfile):
-                self.save_pdmet = tchkfile.load_pdmet(self.chkfile)
+        saved_pdmet = tchkfile.load_pdmet(self.chkfile)
 
-                self.chempot = self.save_pdmet.chempot
-                self.uvec = self.save_pdmet.uvec
-                self.umat = self.save_pdmet.umat
-
-                self.emb_corr_1RDM = self.save_pdmet.actv1RDMloc
-                self.emb_orbs = self.save_pdmet.emb_orbs
-                self.emb_core_orbs = self.save_pdmet.emb_core_orbs
-
-                tprint.print_msg("-> Load the pDMET chkfile")
-
-                self.restart_success = True
-
-            else:
-                tprint.print_msg("-> Cannot load the pDMET chkfile")
+        uvec = np.asarray(saved_pdmet.uvec)
+        if uvec.shape != (self.Nterms,):
+            raise ValueError(
+                f"chkfile uvec shape {uvec.shape} != expected ({self.Nterms},). "
+                "Different system or CF_type than the checkpoint?"
+            )
+        self.chempot, self.uvec, self.umat = (
+            saved_pdmet.chempot,
+            saved_pdmet.uvec,
+            saved_pdmet.umat,
+        )
+        self.emb_corr_1RDM = saved_pdmet.actv1RDMloc
+        self.emb_orbs, self.emb_core_orbs = (
+            saved_pdmet.emb_orbs,
+            saved_pdmet.emb_core_orbs,
+        )
+        self._scf_cycle = saved_pdmet.scf_cycle
+        self.solver.mo_restart = saved_pdmet.mc_mo
+        tprint.print_msg(
+            f"-> Restart from chkfile (resuming at cycle {self._scf_cycle + 1})"
+        )
 
     def _initialize_scf_settings(self):
         if self.scf.alt_CF:
@@ -900,13 +912,9 @@ class pDMET:
     # Chemical-potential fit helpers
     # ------------------------------------------------------------------ #
     #
-    # Why factored out: in one_shot, the embedding step is a 4-line choice
+    # one_shot, the embedding step is a 4-line choice
     # between "trust the Schmidt SVD" (chempot = 0) and "fit chempot".
     # Inlining the fit buried that contract under three nested conditionals.
-    # The two helpers below use guard clauses (early returns) so each
-    # degenerate case is handled in one place and the happy path is at the
-    # bottom of the function -- a common Python readability pattern.
-
     def _revert_chempot(self, chempot):
         """Restore chempot and re-run kernel so cached state stays consistent.
 
@@ -1125,7 +1133,9 @@ class pDMET:
             OEH_type=self.emb.OEH_type,
             dft_HF=self.emb.dft_HF,
         )
-        for cycle in range(self.scf.maxcycle):
+        start = self._scf_cycle
+        for cycle in range(start, self.scf.maxcycle):
+            self._scf_cycle = cycle
             tprint.print_msg("- CYCLE %d:" % (cycle + 1))
             umat_old = self.umat
             rdm1_R0_old = rdm1_R0
@@ -1146,7 +1156,6 @@ class pDMET:
                     bounds=self.bounds,
                 )
             else:
-                # result = optimize.minimize(self.CF, self.uvec, method=self.SC_method, jac=self.CF_grad, options={'disp': False, 'gtol': 1e-12})
                 result = optimize.minimize(
                     self.CF,
                     self.uvec,
@@ -1210,21 +1219,29 @@ class pDMET:
                 bands = self.interpolate_band(frac_kpts)  # noqa: F841
 
             # Check convergence of 1-RDM
-            if self.emb.dft_CF:
-                if norm_rdm <= self.scf.threshold:
-                    break
-            elif norm_u <= self.scf.threshold:
-                break
+            converged = (norm_rdm if self.emb.dft_CF else norm_u) <= self.scf.threshold
 
-            if self.scf.use_DIIS:
-                self.umat = self._diis.update(cycle, self.umat, umat_diff)
+            if not converged:
+                if self.scf.use_DIIS:
+                    self.umat = self._diis.update(cycle, self.umat, umat_diff)
 
-            if self.scf.damping != 1.0:
-                self.umat = (
-                    1.0 - self.scf.damping
-                ) * umat_old + self.scf.damping * self.umat
+                if self.scf.damping != 1.0:
+                    self.umat = (
+                        1.0 - self.scf.damping
+                    ) * umat_old + self.scf.damping * self.umat
 
             self.uvec = self.umat2uvec(self.umat)
+
+            # --- Checkpoint: every chkfile_freq
+            freq = self.scf.chkfile_freq
+            if (cycle + 1) % freq == 0 or converged:
+                self._scf_cycle = cycle + 1
+                name_file = f"pDMET_restart_{cycle + 1}.chk"
+                tchkfile.save_pdmet(self, name_file)
+                tprint.print_msg("   + Checkpoint saved to %s" % (name_file))
+
+            if converged:
+                break
             tprint.print_msg()
 
         tprint.print_msg("- SELF-CONSISTENT DMET CALCULATION ... DONE -")
