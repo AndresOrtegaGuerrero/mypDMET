@@ -199,15 +199,16 @@ class SCFSettings:
 
     method: SCFMethod = SCFMethod.BFGS
     threshold: float = 1e-4
-    maxcycle: int = 200
+    maxcycle: int = 100
     CF_type: CFType = CFType.F
     damping: float = 1.0  # no damping
     use_DIIS: bool = False
     DIIS_start: int = 1
     DIIS_nvector: int = 8
     alt_CF: Optional[bool] = (
-        False  # Whether to use the alternative cost function in the DMET self-consistency
+        False  # alternative cost function in the DMET self-consistency
     )
+    chkfile_freq: int = 5  # Save a restart checkpoint every N cycles
 
     def validate(self):
         if not (0.0 <= self.damping <= 1):
@@ -216,6 +217,8 @@ class SCFSettings:
         if self.use_DIIS:
             if self.DIIS_start < 1:
                 raise ValueError("DIIS_start must be >= 1")
+        if self.chkfile_freq < 1:
+            raise ValueError("chkfile_freq must be >= 1")
 
 
 @dataclass
@@ -270,6 +273,7 @@ class SolverSettings:
     e_shift: Optional[float] = None
     cas: Optional[tuple] = None  # (n_orb, n_ele)
     molist: Optional[list] = None  # list of 1-based orbital indices for active space
+    mo_restart: Optional[object] = None  # Restart orbitals for CASSCF/DMRG-SCF
     state_specific_: Optional[int] = 0
     state_average_: Optional[list] = None  # field(default_factory=lambda: [0.5, 0.5])
     state_average_mix_: Optional[List[Union[StateConfig, dict]]] = (
@@ -282,9 +286,6 @@ class SolverSettings:
     nto_export: bool = False  # also write NTO cubes at the end of one_shot()/run()?
     nto_npairs: int = 2  # how many top (donor, acceptor) pairs per root
     nto_lambda_floor: float = 1e-3  # skip pairs below this weight even if asked
-    mc_dup: Optional[bool] = (
-        None  # Placeholder, I need to figure out how this variable is used.
-    )
     verbose: int = 0
     max_memory: int = 4000  # For impurity solver in MB
     cas_solver: CASType = CASType.FCI

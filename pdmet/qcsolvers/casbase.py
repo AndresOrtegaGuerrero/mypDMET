@@ -40,7 +40,15 @@ class BaseCASSolver(BaseSolver):
         return self.t_dm1s, self.ntos_per_root
 
     def _mo_guess(self, mc):
-        """Return initial guess MOs for CASCI/CASSCF, defaulting to current MF MOs."""
+        """Initial-guess MOs for CASCI/CASSCF, in priority order:
+        1. settings.mo_restart -- MOs from a checkpoint. They already define the
+            converged active space, so hand them back as-is (continue, not restart).
+        2. settings.molist     -- user sorts chosen orbitals into the active space.
+        3. self.mf.mo_coeff    -- plain mean-field guess (the default path).
+        """
+        if self.settings.mo_restart is not None:
+            return self.settings.mo_restart
+
         if self.settings.molist is not None:
             from pyscf import mcscf
 

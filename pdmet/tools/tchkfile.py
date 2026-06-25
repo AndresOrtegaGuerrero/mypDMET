@@ -259,35 +259,26 @@ def load_lo_iao(chkfile):
 
 
 def save_pdmet(pdmet, chkfile):
-    solver = pdmet.solver
-    chempot = pdmet.chempot
-    uvec = pdmet.uvec
-    umat = pdmet.umat
-    emb_orbs = pdmet.emb_orbs
-    emb_core_orbs = pdmet.emb_core_orbs
-    mf_mo = pdmet.qcsolver.mf.mo_coeff
-    actv1RDMloc = pdmet.emb_corr_1RDM
+    name = pdmet.solver.name
+    is_cas = name in ["CASCI", "CASSCF", "DMRG-CI", "DMRG-SCF"]
 
-    if pdmet.solver in ["CASCI", "CASSCF", "DMRG-CI", "DMRG-SCF"]:
-        mc_mo = pdmet.qcsolver.mo
-        mc_mo_nat = pdmet.qcsolver.mo_nat
-
-    pdmet_dic = {
-        "solver": solver,
-        "chempot": chempot,
-        "uvec": uvec,
-        "umat": umat,
-        "emb_orbs": emb_orbs,
-        "emb_core_orbs": emb_core_orbs,
-        "mf_mo": mf_mo,
-        "actv1RDMloc": actv1RDMloc,
+    pdmet_dict = {
+        "solver": name,
+        "scf_cycle": getattr(pdmet, "_scf_cycle", 0),
+        "chempot": pdmet.chempot,
+        "uvec": pdmet.uvec,
+        "umat": pdmet.umat,
+        "emb_orbs": pdmet.emb_orbs,
+        "emb_core_orbs": pdmet.emb_core_orbs,
+        "mf_mo": getattr(getattr(pdmet.qcsolver, "mf", None), "mo_coeff", None),
+        "actv1RDMloc": pdmet.emb_corr_1RDM,
     }
 
-    if pdmet.solver in ["CASCI", "CASSCF", "DMRG-CI", "DMRG-SCF"]:
-        pdmet_dic["mc_mo"] = mc_mo
-        pdmet_dic["mc_mo_nat"] = mc_mo_nat
+    if is_cas:
+        pdmet_dict["mc_mo"] = pdmet.qcsolver.mo
+        pdmet_dict["mc_mo_nat"] = pdmet.qcsolver.mo_nat
 
-    save(chkfile, "pdmet", pdmet_dic)
+    save(chkfile, "pdmet", pdmet_dict)
 
 
 def load_pdmet(chkfile):
@@ -296,6 +287,7 @@ def load_pdmet(chkfile):
     class fake_pdmet:
         def __init__(self, save_pdmet):
             self.solver = None
+            self.scf_cycle = 0
             self.chempot = 0
             self.uvec = False
             self.umat = False
@@ -305,7 +297,8 @@ def load_pdmet(chkfile):
             self.mc_mo = None
             self.mc_mo_nat = None
             if save_pdmet is not None:
-                self.solver = save_pdmet["solver"]
+                self.solver = _to_str(save_pdmet["solver"])
+                self.scf_cycle = int(save_pdmet.get("scf_cycle", 0))
                 self.chempot = save_pdmet["chempot"]
                 self.uvec = save_pdmet["uvec"]
                 self.umat = save_pdmet["umat"]
@@ -314,8 +307,8 @@ def load_pdmet(chkfile):
                 self.mf_mo = save_pdmet["mf_mo"]
                 self.actv1RDMloc = save_pdmet["actv1RDMloc"]
                 if self.solver in ["CASCI", "CASSCF", "DMRG-CI", "DMRG-SCF"]:
-                    self.mc_mo = save_pdmet["mc_mo"]
-                    self.mc_mo_nat = save_pdmet["mc_mo_nat"]
+                    self.mc_mo = save_pdmet.get("mc_mo")
+                    self.mc_mo_nat = save_pdmet.get("mc_mo_nat")
 
     pdmet = fake_pdmet(save_pdmet)
 
