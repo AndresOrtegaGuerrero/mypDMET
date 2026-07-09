@@ -46,6 +46,7 @@ def get_bath_using_RHF_1RDM(
         supercell_1RDM = supercell_1RDM.reshape(Nlo, Nimp)
         emb_1RDM = supercell_1RDM[Nimp:, :]
         imp_indices = np.zeros([Nlo])
+        imp_indices[:Nimp] = 1  # reference cell = impurity (rows come first in R0)
 
         # Diagonalize the env-imp block of 1-RDM
         U, sigma, Vh = np.linalg.svd(emb_1RDM, full_matrices=True)
@@ -94,7 +95,25 @@ def get_bath_using_RHF_1RDM(
         if Nimp + Nbath > Nlo:
             Nbath = Nlo - Nimp
 
+        # Open-shell / strongly entangled env orbitals (sigma away from both 0
+        # and 2) can never live in the closed-shell core: force them into the
+        # bath even under num_bath / truncation. sigma_env is sorted by
+        # |sigma - 1| ascending, so the first n_open entries are exactly these.
+        n_open = int((distance_from_1 < 0.5).sum())
+        if Nbath < n_open:
+            print(
+                f"[DMET WARNING] Nbath={Nbath} < {n_open} open/entangled env "
+                "orbitals; raising Nbath to keep the core closed-shell"
+            )
+            Nbath = n_open
+
         Nelec = int(round(sigma_imp.sum() + sigma_env[:Nbath].sum()))
+        nelec_core = float(sigma_env[Nbath:].sum())
+        assert abs(nelec_core - 2 * round(nelec_core / 2)) < 1e-3, (
+            f"Core would hold {nelec_core:.6f} electrons (odd/fractional): an "
+            "open-shell orbital was truncated out of the bath. Increase "
+            "num_bath or loosen bath_threshold."
+        )
 
     # Assemble the embedding + core orbitals
     Nemb = Nimp + Nbath

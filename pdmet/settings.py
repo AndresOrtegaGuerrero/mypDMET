@@ -236,6 +236,9 @@ class EmbeddingSettings:
             {1: ["3d"], 2: ["2p"]}             # by atom index
     num_bath :  int -  Used to keep the no. of baths are the same as in the 1st cycle of SCF
     bath_truncation : bool  -Whether to use bath_truncatio or not.
+    bath_threshold : float - env eigenvalues closer than this to 0 or 2 are
+        dropped from the bath. Must sit ABOVE the SCF eigenvalue noise
+        (~conv_tol^(1/2)); 1e-10 would make Nbath depend on convergence noise.
     use_GDF : bool - Whether to use GDF for ERI transformation.
     xc : str, DFT the functional for GDF, e.g., "PBE0"
     xc_range : float range separation (auto 0.2 for RSH-PBE0)
@@ -252,6 +255,7 @@ class EmbeddingSettings:
     imp_orbital_filter: Optional[dict] = None
     num_bath: Optional[int] = None
     bath_truncation: bool = True
+    bath_threshold: float = 1.0e-6
     use_GDF: bool = True
     xc: Optional[str] = None
     xc_omega: Optional[float] = None

@@ -327,7 +327,14 @@ def make_iao_pao_kbasis(
 
 class Local:
     def __init__(
-        self, cell, kmf, lobasis, is_KROHF=False, xc_omega=0.2, OEH_type="FOCK"
+        self,
+        cell,
+        kmf,
+        lobasis,
+        is_KROHF=False,
+        xc_omega=0.2,
+        OEH_type="FOCK",
+        fock_ref=None,
     ):
         """
         Args:
@@ -451,8 +458,17 @@ class Local:
         # 1e integral for the active part
         self.actOEI_kpts = full_OEI_k + coreJK_kpts
 
-        self.fullfock_kpts = kmf.get_fock(s1e=kmf.get_ovlp(), dm=kmf.make_rdm1())
+        # Prefer a Fock captured *before* exxdiv stripping (see
+        # pDMET._record_exxdiv): its ewald-shifted spectrum reproduces the SCF
+        # occupation assignment exactly on refill.
+        self.fullfock_kpts = (
+            fock_ref
+            if fock_ref is not None
+            else kmf.get_fock(s1e=kmf.get_ovlp(), dm=kmf.make_rdm1())
+        )
         self.loc_actFOCK_kpts = self.ao_2_loc(self.fullfock_kpts, self.ao2lo)
+        # Spin-resolved LO densities (ROHF only), filled by make_loc_1RDM_kpts
+        self.loc_1RDM_a_kpts = self.loc_1RDM_b_kpts = None
 
         # DF-like DMET: the effective-Hamiltonian (DF/DFT) cost function needs the
         # mean-field J/K, density and a KS object. These are consumed *only* by
@@ -553,6 +569,15 @@ class Local:
 
         if self._is_KROHF:
             mo_occ = helper.get_occ_rohf(self.nelec, eigvals)
+            # Keep the spin-resolved densities (alpha: occ>0, beta: occ==2).
+            # They are the exact embedded-ROHF guess; total DM is their sum.
+            occ = np.asarray(mo_occ)
+            self.loc_1RDM_a_kpts = np.einsum(
+                "kij,kj,klj->kil", eigvecs, (occ > 0).astype(float), eigvecs.conj()
+            )
+            self.loc_1RDM_b_kpts = np.einsum(
+                "kij,kj,klj->kil", eigvecs, (occ == 2).astype(float), eigvecs.conj()
+            )
         else:
             mo_occ = helper.get_occ_rhf(self.nelec_total, eigvals)
 

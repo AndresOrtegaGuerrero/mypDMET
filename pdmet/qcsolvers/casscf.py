@@ -42,11 +42,17 @@ class CASSCFSolver(BaseCASSolver):
         mo = self._mo_guess(self.mc)
 
         e_tot, _, fcivec = self.mc.kernel(mo)[:3]
+        if not self.mc.converged:
+            print("WARNING: CASSCF not converged -- one retry from last orbitals")
+            e_tot, _, fcivec = self.mc.kernel(self.mc.mo_coeff)[:3]
+            if not self.mc.converged:
+                raise RuntimeError(
+                    "CASSCF did not converge after retry; refusing to build "
+                    "RDMs/energies from an unconverged wavefunction."
+                )
         if state_specific_ is None:
             if state_average_ is not None or state_average_mix_ is not None:
                 e_tot = np.asarray(self.mc.e_states)
-        if not self.mc.converged:
-            print("WARNING: CASSCF not converged")
 
         self.mo_nat = self.mc.mo_coeff
         self.mo = self.mc.mo_coeff

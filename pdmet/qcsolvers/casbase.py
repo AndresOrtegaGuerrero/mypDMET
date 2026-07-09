@@ -97,16 +97,22 @@ class BaseCASSolver(BaseSolver):
         mcscf.mc_ao2mo routes through the 3-center tensor instead of
         looking for `mf._eri` (which no longer exists).
         """
-        if (
-            hasattr(self.mf, "with_df")
-            and self.mf.with_df is not None
-            and not getattr(mc, "with_df", None)
-        ):
-            mc = mc.density_fit(with_df=self.mf.with_df)
-            self.mc = mc  # rebind so the caller sees the wrapped object
+        if hasattr(self.mf, "with_df") and self.mf.with_df is not None:
+            if not getattr(mc, "with_df", None):
+                mc = mc.density_fit(with_df=self.mf.with_df)
+                self.mc = mc  # rebind so the caller sees the wrapped object
+            else:
+                # mf (and its B tensor) is rebuilt on every _setup_mf; without
+                # this refresh the CAS integrals keep the previous cycle's B.
+                mc.with_df = self.mf.with_df
         mc.mol = self.mol
         mc._scf = self.mf
         mc.ncas = cas_norb
+        # parity guard: a mismatch would silently change the CAS spin
+        assert (cas_nelec - self.mol.spin) % 2 == 0, (
+            f"cas_nelec={cas_nelec} incompatible with twoS={self.mol.spin}: "
+            "put the open shell(s) inside the active space."
+        )
         nelecb = (cas_nelec - self.mol.spin) // 2
         mc.nelecas = (cas_nelec - nelecb, nelecb)
         ncorelec = self.mol.nelectron - sum(mc.nelecas)

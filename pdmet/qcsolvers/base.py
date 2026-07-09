@@ -122,6 +122,12 @@ class BaseSolver:
         from pyscf import scf
 
         self.mol.nelectron = self.Nel
+        # pyscf computes nalpha = (Nel + spin)//2: a parity mismatch would
+        # silently change 2S (or lose an electron). Fail loudly instead.
+        assert (self.Nel - self.mol.spin) % 2 == 0, (
+            f"Nelec_in_emb={self.Nel} incompatible with twoS={self.mol.spin}; "
+            "check bath truncation / num_bath."
+        )
         base = (
             scf.ROHF(self.mol)
             if (self.mol.spin or self.is_KROHF)
@@ -134,14 +140,25 @@ class BaseSolver:
         # Inject embedding DF tensor as the 3-center _cderi
         # Shape convention: (naux, nemb*(nemb+1)/2) — lower-triangular packed
         naux, nemb, _ = self.B.shape
+        # pack_tril silently discards any antisymmetric part of B
+        assert abs(self.B - self.B.transpose(0, 2, 1)).max() < 1e-10, (
+            "embedding DF tensor B is not symmetric in (m, n)"
+        )
         self.mf.with_df._cderi = lib.pack_tril(self.B)
         self.mf.with_df.auxcell = None
         self.mf.with_df.get_naoaux = lambda: naux
 
         self.mf.scf(self.DMguess)
         if not self.mf.converged:
-            dm = self.mf.mo_coeff @ np.diag(self.mf.mo_occ) @ self.mf.mo_coeff.T
-            self.mf.newton().kernel(dm0=dm)
+            # newton() returns a *copy* (its kernel writes results onto that
+            # copy, never back onto self.mf) -- capture and copy back by hand.
+            mf2 = self.mf.newton()
+            mf2.kernel(mo_coeff=self.mf.mo_coeff, mo_occ=self.mf.mo_occ)
+            self.mf.mo_coeff, self.mf.mo_occ = mf2.mo_coeff, mf2.mo_occ
+            self.mf.mo_energy, self.mf.e_tot = mf2.mo_energy, mf2.e_tot
+            self.mf.converged = mf2.converged
+        if not self.mf.converged:
+            raise RuntimeError("Embedded HF/ROHF did not converge (SCF + Newton).")
 
     def _mo_to_local(self, RDM1_mo, RDM2_mo=None):
         """Transform RDM1 (and optionally RDM2) from MO to local basis."""
