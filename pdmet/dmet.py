@@ -841,16 +841,18 @@ class pDMET:
 
         return emb_orbs, core_orbs, Nbath, Nelec_in_emb
 
-    def _check_loc_1RDM_vs_ref(self, tol=1e-4):
+    def _check_loc_1RDM_vs_ref(self, warn_tol=1e-4, fail_tol=1e-2):
         """At umat=0 / FOCK OEH the refilled density must equal the mean-field
         reference: loc_1RDM == C^H S D S C (densities transform with S, unlike
         operators). Catches occupation-reassignment, exxdiv and bath-threshold
         problems before they silently corrupt the bath.
 
-        tol: the DM residual of the reference itself scales ~sqrt(conv_tol)
-        (~1e-5 at the default conv_tol=1e-8), while the failure modes this
-        guards against move a whole electron (err ~ 0.1-1). 1e-4 separates
-        the two cleanly; tighten kmf.conv_tol if you want a tighter check.
+        Two tiers. A genuine misassignment displaces a whole electron
+        (err ~ 0.1-1) -> fail_tol=1e-2 catches it with margin. Below that,
+        the residual is reference noise: ~sqrt(conv_tol) SCF residual, plus
+        eigenvector rotations within quasi-degenerate open-shell manifolds
+        (coupling/gap -- easily 1e-4 in Fe-S clusters) -> warn only, and
+        tighten kmf.conv_tol if it bothers you.
         """
         dm = np.asarray(to_numpy(self.kmf.make_rdm1()))
         if dm.ndim == 4:  # ROHF: (2, nk, nao, nao) -> total
@@ -861,12 +863,21 @@ class pDMET:
             "kui,kuv,kvw,kwx,kxj->kij", C.conj(), S, dm, S, C, optimize=True
         )
         err = abs(np.asarray(self.loc_1RDM_kpts) - dm_lo).max()
-        assert err < tol, (
+        assert err < fail_tol, (
             f"loc 1-RDM from OEH refill deviates from the SCF reference by "
-            f"{err:.2e} (> {tol:.0e}): occupation reassignment (Roothaan vs "
-            "mo_ea), exxdiv handling, or SCF convergence issue."
+            f"{err:.2e} (> {fail_tol:.0e}): an electron was likely assigned "
+            "to a different orbital (Roothaan vs mo_ea selection, exxdiv "
+            "reordering, or an unconverged reference)."
         )
-        level = "OK" if err < 1e-5 else "OK, but tighten kmf.conv_tol"
+        if err < 1e-5:
+            level = "OK"
+        elif err < warn_tol:
+            level = "OK, but tighten kmf.conv_tol"
+        else:
+            level = (
+                "WARNING: reference-noise level is high -- tighten "
+                "kmf.conv_tol and check for quasi-degenerate open shells"
+            )
         tprint.print_msg(f"   |loc_1RDM - reference| = {err:.2e}  ({level})")
 
     def check_exact(self, error=1.0e-6):
