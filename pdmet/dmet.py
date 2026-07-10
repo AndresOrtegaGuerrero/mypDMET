@@ -159,7 +159,6 @@ class pDMET:
         """
         self.exxdiv = self.kmf.exxdiv
         self.e_madelung = 0.0
-        self._fock_ref = None
         if self.exxdiv is None:
             self.madelung = 0.0
             return
@@ -171,12 +170,6 @@ class pDMET:
         from pyscf.pbc import tools
 
         self.madelung = tools.pbc.madelung(self.cell, self.kmf.kpts)
-        # Capture the Fock *with* exxdiv before stripping it: the ewald-shifted
-        # spectrum reproduces the SCF occupation assignment on refill, whereas
-        # the bare Fock can reorder occ/virt whenever the gap < madelung.
-        self._fock_ref = to_numpy(
-            self.kmf.get_fock(s1e=self.kmf.get_ovlp(), dm=self.kmf.make_rdm1())
-        )
         # Closed-form Ewald/Madelung energy constant for a full-HF-exchange
         # (RHF/ROHF) reference:  E_madelung = -0.5 * madelung * nelec_per_cell.
         self.kmf.exxdiv = None  # embed bare; orbitals are fixed -> density unchanged
@@ -226,7 +219,6 @@ class pDMET:
             self._is_ROHF,
             self.emb.xc_omega,
             OEH_type=self.emb.OEH_type,
-            fock_ref=getattr(self, "_fock_ref", None),
         )
         self.e_core = self.local.e_core
 

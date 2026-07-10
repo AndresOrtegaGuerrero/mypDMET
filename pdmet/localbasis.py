@@ -334,7 +334,6 @@ class Local:
         is_KROHF=False,
         xc_omega=0.2,
         OEH_type="FOCK",
-        fock_ref=None,
     ):
         """
         Args:
@@ -457,15 +456,7 @@ class Local:
 
         # 1e integral for the active part
         self.actOEI_kpts = full_OEI_k + coreJK_kpts
-
-        # Prefer a Fock captured *before* exxdiv stripping (see
-        # pDMET._record_exxdiv): its ewald-shifted spectrum reproduces the SCF
-        # occupation assignment exactly on refill.
-        self.fullfock_kpts = (
-            fock_ref
-            if fock_ref is not None
-            else kmf.get_fock(s1e=kmf.get_ovlp(), dm=kmf.make_rdm1())
-        )
+        self.fullfock_kpts = kmf.get_fock(s1e=kmf.get_ovlp(), dm=kmf.make_rdm1())
         self.loc_actFOCK_kpts = self.ao_2_loc(self.fullfock_kpts, self.ao2lo)
         # Spin-resolved LO densities (ROHF only), filled by make_loc_1RDM_kpts
         self.loc_1RDM_a_kpts = self.loc_1RDM_b_kpts = None
