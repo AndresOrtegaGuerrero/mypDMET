@@ -134,8 +134,10 @@ class BaseSolver:
             else scf.RHF(self.mol)
         )
         self.mf = base.density_fit()
-        self.mf.get_hcore = lambda *args: self.FOCK - self.chempot
-        self.mf.get_ovlp = lambda *args: np.eye(self.Norb)
+        h_emb = self.FOCK - self.chempot
+        s_emb = np.eye(self.Norb)
+        self.mf.get_hcore = lambda *args: h_emb
+        self.mf.get_ovlp = lambda *args: s_emb
 
         # Inject embedding DF tensor as the 3-center _cderi
         # Shape convention: (naux, nemb*(nemb+1)/2) — lower-triangular packed
