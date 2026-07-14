@@ -202,14 +202,20 @@ class BaseSolver:
         mo_occ[:nb] = 2
         mo_occ[nb:na] = 1
 
+        # DMguess is spin-resolved (2, Norb, Norb) for the ROHF embedding;
+        # occupation analysis wants the spin-SUMMED density (0..2 scale).
+        dm_tot = np.asarray(self.DMguess)
+        if dm_tot.ndim == 3:
+            dm_tot = dm_tot[0] + dm_tot[1]
+
         if self.settings.emb_orbitals == "natural":
-            n_occ, C = np.linalg.eigh(self.DMguess)
+            n_occ, C = np.linalg.eigh(dm_tot)
             order = np.argsort(n_occ)[::-1]
             C = np.ascontiguousarray(C[:, order])
             n_diag = n_occ[order]
         else:  # "embedding"
             C = np.eye(self.Norb)
-            n_diag = np.diag(self.DMguess).copy()
+            n_diag = np.diag(dm_tot).copy()
             # CASSCF's core window is positional: warn when the first nb raw
             # embedding orbitals do not actually carry the occupied density.
             core_charge = float(n_diag[:nb].sum())
