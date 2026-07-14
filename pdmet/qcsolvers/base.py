@@ -150,6 +150,23 @@ class BaseSolver:
         self.mf.with_df.auxcell = None
         self.mf.with_df.get_naoaux = lambda: naux
 
+        if not self.settings.run_emb_scf:
+            name = str(self.solver)
+            if not any(t in name for t in ("CAS", "DMRG", "SHCI", "FCI")):
+                raise RuntimeError(
+                    f"run_emb_scf=False reached the {name} solver: HF/MP2/"
+                    f"CCSD require a converged embedded mean field "
+                    f"(Brillouin's theorem). Set run_emb_scf=True for this "
+                    f"solver -- was it changed after initialize()?"
+                )
+            # CAS-DMET container mode: no SCF. The mf only holds the
+            # embedding integrals + orbitals; the CAS/DMRG solver does all
+            # the solving and NEVPT2 corrects the energy from the KROHF
+            # low level. Converging an embedded HF here would only rotate
+            # away the designed embedding orbitals.
+            self._setup_mf_container()
+            return
+
         self.mf.scf(self.DMguess)
         if not self.mf.converged:
             # newton() returns a *copy* (its kernel writes results onto that
@@ -161,6 +178,61 @@ class BaseSolver:
             self.mf.converged = mf2.converged
         if not self.mf.converged:
             raise RuntimeError("Embedded HF/ROHF did not converge (SCF + Newton).")
+
+    def _setup_mf_container(self):
+        """Populate the mf as a pure container (run_emb_scf=False).
+
+        Orbitals (settings.emb_orbitals):
+          "embedding" -- identity: the impurity+bath orbitals AS CONSTRUCTED.
+                         molist indices == embedding orbital indices.
+          "natural"   -- natural orbitals of the embedding guess density:
+                         the same space (a rotation-free re-sort would not
+                         change any physics the CAS can express), ordered by
+                         occupation so CASSCF's positional core window is
+                         automatically sensible.
+
+        mo_occ is the ideal ROHF pattern (nb doubles, 2S singles) on the
+        chosen ordering; mo_energy = diag(C^T FOCK C) for diagnostics only.
+        mf.e_tot is the energy OF THE GUESS OCCUPATION -- bookkeeping only;
+        the physical energy comes from the CAS solver (+NEVPT2).
+        """
+        nb = (self.Nel - self.mol.spin) // 2
+        na = self.Nel - nb
+        mo_occ = np.zeros(self.Norb)
+        mo_occ[:nb] = 2
+        mo_occ[nb:na] = 1
+
+        if self.settings.emb_orbitals == "natural":
+            n_occ, C = np.linalg.eigh(self.DMguess)
+            order = np.argsort(n_occ)[::-1]
+            C = np.ascontiguousarray(C[:, order])
+            n_diag = n_occ[order]
+        else:  # "embedding"
+            C = np.eye(self.Norb)
+            n_diag = np.diag(self.DMguess).copy()
+            # CASSCF's core window is positional: warn when the first nb raw
+            # embedding orbitals do not actually carry the occupied density.
+            core_charge = float(n_diag[:nb].sum())
+            if abs(core_charge - 2.0 * nb) > 0.5:
+                print(
+                    f"  WARNING(container): first {nb} embedding orbitals "
+                    f"hold {core_charge:.2f} e (ideal {2 * nb}). The "
+                    f"positional core window is wrong -- select the active "
+                    f"space with molist (CASSCF's core-virtual rotations "
+                    f"relax the rest), or set emb_orbitals='natural'."
+                )
+
+        self.mf.mo_coeff = C
+        self.mf.mo_occ = mo_occ
+        self.mf.mo_energy = lib.einsum("pi,pq,qi->i", C, self.FOCK, C)
+        self.mf.e_tot = self.mf.energy_tot(dm=self.mf.make_rdm1())
+        self.mf.converged = True  # container: no SCF was run (by design)
+        head = np.round(n_diag[: min(10, self.Norb)], 3)
+        print(
+            f"  [container] embedded SCF skipped -- mf holds integrals + "
+            f"{self.settings.emb_orbitals} orbitals "
+            f"(guess occupations head: {head.tolist()})"
+        )
 
     def _mo_to_local(self, RDM1_mo, RDM2_mo=None):
         """Transform RDM1 (and optionally RDM2) from MO to local basis."""

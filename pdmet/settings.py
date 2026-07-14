@@ -292,6 +292,18 @@ class SolverSettings:
     nto_lambda_floor: float = 1e-3  # skip pairs below this weight even if asked
     ci_max_det: int = 8  # dominant determinants printed per CI state
     ci_print_tol: float = 0.1  # |coeff| threshold for the printed determinant table
+    # CAS-DMET container mode: skip the embedded HF/ROHF entirely -- the mf
+    # object only holds integrals + orbitals, and the CAS/DMRG solver does
+    # ALL the solving (NEVPT2 corrects the energy from the KROHF low level).
+    run_emb_scf: bool = True  # False = container mode (CAS/DMRG/FCI only)
+    # Which orbitals the container holds (only used when run_emb_scf=False):
+    #   "embedding" -> the impurity+bath orbitals AS CONSTRUCTED (identity);
+    #                  molist indices == embedding orbital indices. NOTE:
+    #                  CASSCF's core window is positional -- sort the active
+    #                  space with molist.
+    #   "natural"   -> natural orbitals of the embedding guess density
+    #                  (same space, occupation-sorted -> sane core window).
+    emb_orbitals: str = "embedding"
     verbose: int = 0
     max_memory: int = 4000  # For impurity solver in MB
     cas_solver: CASType = CASType.FCI
@@ -346,6 +358,25 @@ class SolverSettings:
             raise ValueError("ci_max_det must be >= 1.")
         if not (0.0 < self.ci_print_tol < 1.0):
             raise ValueError("ci_print_tol must be in (0, 1).")
+
+        if self.emb_orbitals not in ("embedding", "natural"):
+            raise ValueError(
+                f"emb_orbitals must be 'embedding' or 'natural', "
+                f"got {self.emb_orbitals!r}"
+            )
+        if not self.run_emb_scf:
+            # Container mode is only valid for solvers that optimize orbitals
+            # (CASSCF/DMRG-SCF), tolerate non-canonical ones (CASCI/DMRG-CI/
+            # SHCI), or are orbital-invariant (FCI). MP2/CCSD amplitudes
+            # assume a converged canonical mean field (Brillouin's theorem).
+            name = str(self.name)
+            ok = any(t in name for t in ("CAS", "DMRG", "SHCI", "FCI"))
+            if not ok:
+                raise ValueError(
+                    f"run_emb_scf=False (CAS-DMET container mode) is not "
+                    f"valid for solver {name}: HF/MP2/CCSD require a "
+                    f"converged embedded mean field."
+                )
 
         if self.nroots > 1:
             if self.state_percent is not None:
