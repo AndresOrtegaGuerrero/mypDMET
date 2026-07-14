@@ -290,6 +290,8 @@ class SolverSettings:
     nto_export: bool = False  # also write NTO cubes at the end of one_shot()/run()?
     nto_npairs: int = 2  # how many top (donor, acceptor) pairs per root
     nto_lambda_floor: float = 1e-3  # skip pairs below this weight even if asked
+    ci_max_det: int = 8  # dominant determinants printed per CI state
+    ci_print_tol: float = 0.1  # |coeff| threshold for the printed determinant table
     verbose: int = 0
     max_memory: int = 4000  # For impurity solver in MB
     cas_solver: CASType = CASType.FCI
@@ -339,6 +341,11 @@ class SolverSettings:
                 raise ValueError("nto_npairs must be >= 1.")
             if self.nto_lambda_floor < 0:
                 raise ValueError("nto_lambda_floor must be non-negative.")
+
+        if self.ci_max_det < 1:
+            raise ValueError("ci_max_det must be >= 1.")
+        if not (0.0 < self.ci_print_tol < 1.0):
+            raise ValueError("ci_print_tol must be in (0, 1).")
 
         if self.nroots > 1:
             if self.state_percent is not None:
