@@ -197,10 +197,10 @@ class SCFSettings:
     Settings for the SCF optimization in DMET self-consistency
     """
 
-    method: SCFMethod = SCFMethod.BFGS
+    method: SCFMethod = SCFMethod.LBFGS_B
     threshold: float = 1e-4
     maxcycle: int = 100
-    CF_type: CFType = CFType.F
+    CF_type: CFType = CFType.diagF
     damping: float = 1.0  # no damping
     use_DIIS: bool = False
     DIIS_start: int = 1
