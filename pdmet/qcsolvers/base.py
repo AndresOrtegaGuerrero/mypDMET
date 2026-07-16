@@ -231,14 +231,56 @@ class BaseSolver:
         self.mf.mo_coeff = C
         self.mf.mo_occ = mo_occ
         self.mf.mo_energy = lib.einsum("pi,pq,qi->i", C, self.FOCK, C)
-        self.mf.e_tot = self.mf.energy_tot(dm=self.mf.make_rdm1())
-        self.mf.converged = True  # container: no SCF was run (by design)
-        head = np.round(n_diag[: min(10, self.Norb)], 3)
+        # bookkeeping energy of the TRUE embedding-projected low-level density
+        self.mf.e_tot = self.mf.energy_tot(dm=self.DMguess)
+        self.mf.converged = True  # container: no SCF by design
+
         print(
             f"  [container] embedded SCF skipped -- mf holds integrals + "
-            f"{self.settings.emb_orbitals} orbitals "
-            f"(guess occupations head: {head.tolist()})"
+            f"{self.settings.emb_orbitals} orbitals; "
+            f"E(low-level, embedding) = {self.mf.e_tot:.10f}"
         )
+        self._print_container_occupations(n_diag, nb, na)
+        if self.settings.emb_orbitals == "natural":
+            self._print_container_composition(C, n_diag)
+
+    def _print_container_occupations(self, n, nb, na):
+        """Guess occupations at the closed|open and open|virtual boundaries."""
+        lo = max(0, nb - 2)
+        hi = min(self.Norb, na + 2)
+        row = "  ".join(f"n[{i}]={n[i]:.3f}" for i in range(lo, hi))
+        print(
+            f"  [container] occupations near the frontier "
+            f"({self.Nel} e in {self.Norb} orbitals): {row}"
+        )
+        if 0 < nb < na and (n[nb - 1] - n[nb]) < 0.5:
+            print("  [container] WARNING: closed|open gap < 0.5 -- ambiguous")
+        if 0 < na < self.Norb and (n[na - 1] - n[na]) < 0.5:
+            print("  [container] WARNING: open|virtual gap < 0.5 -- ambiguous")
+        nfrac = int(((n > 0.05) & (n < 1.95)).sum())
+        print(f"  [container] fractional occupations (0.05 < n < 1.95): {nfrac}")
+
+    def _print_container_composition(self, C, n, max_rows=40):
+        """NO composition vs the impurity block -- for picking molist indices."""
+        w = np.abs(C) ** 2
+        w_imp = w[: self.Nimp, :].sum(axis=0)
+        sel = np.where(((n > 0.02) & (n < 1.98)) | (w_imp > 0.5))[0]
+        if sel.size == 0:
+            return
+        print(
+            "  [container] NO composition (fractional or imp-weight > 0.5) "
+            "-- molist uses these NO indices (0-based):"
+        )
+        print("      NO       n   w_imp   top embedding components (* = impurity)")
+        for row_i, i in enumerate(sel):
+            if row_i >= max_rows:
+                print(f"      ... {sel.size - max_rows} more suppressed")
+                break
+            top = np.argsort(w[:, i])[::-1][:3]
+            comp = "  ".join(
+                f"emb#{k}({w[k, i]:.2f})" + ("*" if k < self.Nimp else "") for k in top
+            )
+            print(f"   {i:6d}  {n[i]:6.3f}  {w_imp[i]:5.2f}   {comp}")
 
     def _mo_to_local(self, RDM1_mo, RDM2_mo=None):
         """Transform RDM1 (and optionally RDM2) from MO to local basis."""
