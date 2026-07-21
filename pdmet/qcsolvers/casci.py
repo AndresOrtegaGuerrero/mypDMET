@@ -19,7 +19,7 @@ class CASCISolver(BaseCASSolver):
     def kernel(self, fci_solver="FCI"):
         """
         Run CASCI in the embedding basis
-        fci_solver : str - 'FCI' or 'ChemMPS2' (For DMRG-CI)
+        fci_solver : str - 'FCI' or 'CheMPS2' (For CHEMPS2-CI)
 
         Returns
         -------

@@ -25,7 +25,7 @@ class CASSCFSolver(BaseCASSolver):
     ):
         """
         Run CASSCF in the embedding basis
-        fci_solver : str - 'FCI' or 'ChemMPS2' (For DMRG-CI)
+        fci_solver : str - 'FCI' or 'CheMPS2' (For CHEMPS2-SCF)
 
         Returns
         -------

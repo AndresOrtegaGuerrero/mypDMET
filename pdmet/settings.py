@@ -74,12 +74,14 @@ class Solver(str, Enum):
     FCI = "FCI"
     DMRG = "DMRG"
     SHCI = "SHCI"
-    # CASCI family
+    # CASCI family  (DMRG-* = block2, CHEMPS2-* = CheMPS2)
     CASCI = "CASCI"
     DMRG_CI = "DMRG-CI"
+    CHEMPS2_CI = "CHEMPS2-CI"
     # CASSCF family
     CASSCF = "CASSCF"
     DMRG_SCF = "DMRG-SCF"
+    CHEMPS2_SCF = "CHEMPS2-SCF"
     SS_CASSCF = "SS-CASSCF"
     SA_CASSCF = "SA-CASSCF"
     SS_DMRG_SCF = "SS-DMRG-SCF"
@@ -370,7 +372,7 @@ class SolverSettings:
             # SHCI), or are orbital-invariant (FCI). MP2/CCSD amplitudes
             # assume a converged canonical mean field (Brillouin's theorem).
             name = str(self.name)
-            ok = any(t in name for t in ("CAS", "DMRG", "SHCI", "FCI"))
+            ok = any(t in name for t in ("CAS", "DMRG", "SHCI", "FCI", "CHEMPS2"))
             if not ok:
                 raise ValueError(
                     f"run_emb_scf=False (CAS-DMET container mode) is not "

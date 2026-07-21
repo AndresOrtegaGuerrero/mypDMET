@@ -8,97 +8,37 @@ from pdmet.qcsolvers.casci import CASCISolver
 from pdmet.qcsolvers.casscf import CASSCFSolver
 from pdmet.qcsolvers.caspdft import CASPDFTSolver
 from pdmet.qcsolvers.dmrgblock2 import DMRGBlock2Solver
+from pdmet.qcsolvers.dmrgblock2ci import DMRGBlock2CISolver
 
+# Convention: DMRG-* solvers are block2; CheMPS2 lives under CHEMPS2-*.
 _REGISTRY = {
-    Solver.HF: {
-        "cls": HFSolver,
-    },
-    Solver.MP2: {
-        "cls": MP2Solver,
-    },
-    Solver.RCCSD: {
-        "cls": RCCSDSolver,
-    },
-    Solver.RCCSD_T: {
-        "cls": RCCSD_TSolver,
-    },
-    Solver.RCCSD_TSlow: {
-        "cls": RCCSD_TSlowSolver,
-    },
-    Solver.FCI: {
-        "cls": FCISolver,
-    },
-    Solver.SHCI: {
-        "cls": SHCISolver,
-    },
-    Solver.CASCI: {
-        "cls": CASCISolver,
-        "family": "CASCI",
-    },
-    Solver.DMRG_CI: {
-        "cls": CASCISolver,
-        "family": "CASCI",
-        "fci_solver": "CheMPS2",
-    },
-    Solver.CASSCF: {
-        "cls": CASSCFSolver,
-        "family": "CASSCF",
-    },
-    Solver.DMRG_SCF: {
+    Solver.HF: {"cls": HFSolver},
+    Solver.MP2: {"cls": MP2Solver},
+    Solver.RCCSD: {"cls": RCCSDSolver},
+    Solver.RCCSD_T: {"cls": RCCSD_TSolver},
+    Solver.RCCSD_TSlow: {"cls": RCCSD_TSlowSolver},
+    Solver.FCI: {"cls": FCISolver},
+    Solver.SHCI: {"cls": SHCISolver},
+    # CASCI family (no orbital optimization -> nroots-driven, no SS/SA)
+    Solver.CASCI: {"cls": CASCISolver, "family": "CASCI"},
+    Solver.DMRG_CI: {"cls": DMRGBlock2CISolver, "family": "CASCI"},
+    Solver.CHEMPS2_CI: {"cls": CASCISolver, "family": "CASCI", "fci_solver": "CheMPS2"},
+    # CASSCF family
+    Solver.CASSCF: {"cls": CASSCFSolver, "family": "CASSCF"},
+    Solver.DMRG_SCF: {"cls": DMRGBlock2Solver, "family": "CASSCF"},
+    Solver.CHEMPS2_SCF: {
         "cls": CASSCFSolver,
         "family": "CASSCF",
         "fci_solver": "CheMPS2",
     },
-    Solver.SS_CASSCF: {
-        "cls": CASSCFSolver,
-        "family": "CASSCF",
-        "state": "SS",
-    },
-    Solver.SA_CASSCF: {
-        "cls": CASSCFSolver,
-        "family": "CASSCF",
-        "state": "SA",
-    },
-    Solver.SS_DMRG_SCF: {
-        "cls": CASSCFSolver,
-        "family": "CASSCF",
-        "state": "SS",
-        "fci_solver": "CheMPS2",
-    },
-    Solver.SA_DMRG_SCF: {
-        "cls": CASSCFSolver,
-        "family": "CASSCF",
-        "state": "SA",
-        "fci_solver": "CheMPS2",
-    },
-    #  Solver.DMRG       : (DMRGSolver,   {}),
-    Solver.CASPDFT: {
-        "cls": CASPDFTSolver,
-        "family": "CASPDFT",
-        # "fci_solver": "CheMPS2",
-    },
-    Solver.SS_CASPDFT: {
-        "cls": CASPDFTSolver,
-        "family": "CASPDFT",
-        "state": "SS",
-        # "fci_solver": "CheMPS2",
-    },
-    Solver.SA_CASPDFT: {
-        "cls": CASPDFTSolver,
-        "family": "CASPDFT",
-        "state": "SA",
-        # "fci_solver": "CheMPS2",
-    },
-    Solver.SA_DMRG_SCF: {
-        "cls": DMRGBlock2Solver,
-        "family": "CASSCF",
-        "state": "SA",
-    },
-    Solver.SS_DMRG_SCF: {
-        "cls": DMRGBlock2Solver,
-        "family": "CASSCF",
-        "state": "SS",
-    },
+    Solver.SS_CASSCF: {"cls": CASSCFSolver, "family": "CASSCF", "state": "SS"},
+    Solver.SA_CASSCF: {"cls": CASSCFSolver, "family": "CASSCF", "state": "SA"},
+    Solver.SS_DMRG_SCF: {"cls": DMRGBlock2Solver, "family": "CASSCF", "state": "SS"},
+    Solver.SA_DMRG_SCF: {"cls": DMRGBlock2Solver, "family": "CASSCF", "state": "SA"},
+    # MC-PDFT family
+    Solver.CASPDFT: {"cls": CASPDFTSolver, "family": "CASPDFT"},
+    Solver.SS_CASPDFT: {"cls": CASPDFTSolver, "family": "CASPDFT", "state": "SS"},
+    Solver.SA_CASPDFT: {"cls": CASPDFTSolver, "family": "CASPDFT", "state": "SA"},
 }
 
 
