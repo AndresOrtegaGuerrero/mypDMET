@@ -94,7 +94,7 @@ class CASSCFSolver(BaseCASSolver):
                 fci_solver.spin = solver.spin
                 fci_solver.nroots = solver.roots
                 fci_solver.max_cycle = (
-                    120  # Hardcoded for now, can be made a user input if needed
+                    500  # Hardcoded for now, can be made a user input if needed
                 )
                 solvers.append(fci_solver)
                 weight_list += solver.weights
@@ -190,6 +190,11 @@ class CASSCFSolver(BaseCASSolver):
             fci_solver.spin = spin
             fci_solver.nroots = nevpt2_nroots[i]
             fci_solver.max_cycle = max_cycle
+
+            if self.settings.e_shift is not None:
+                ss = 0.5 * spin * (0.5 * spin + 1)
+                mc_ci.fix_spin_(shift=self.settings.e_shift, ss=ss)
+
             mc_ci.fcisolver = fci_solver
 
             fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
