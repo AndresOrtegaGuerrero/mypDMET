@@ -90,11 +90,12 @@ class CASSCFSolver(BaseCASSolver):
             solvers = []
             weight_list = []
             for solver in state_average_mix_:
-                fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=solver.spin)
+                ss = 0.5 * solver.spin * (0.5 * solver.spin + 1)
+                fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=ss)
                 fci_solver.spin = solver.spin
                 fci_solver.nroots = solver.roots
                 fci_solver.max_cycle = (
-                    500  # Hardcoded for now, can be made a user input if needed
+                    300  # Hardcoded for now, can be made a user input if needed
                 )
                 solvers.append(fci_solver)
                 weight_list += solver.weights
@@ -140,9 +141,6 @@ class CASSCFSolver(BaseCASSolver):
             )
             neleca_i, nelecb_i = nelecas_list[i]
             self._print_ci_analysis(civec, cas_norb, neleca_i, nelecb_i, i)
-            # self._print_ci_analysis(
-            #    civec, cas_norb, self.mc.nelecas[0], self.mc.nelecas[1], i
-            # )
             RDM1s.append(rdm1)
             e_cells.append(e_imp)
 
@@ -165,11 +163,7 @@ class CASSCFSolver(BaseCASSolver):
         return e_cell, RDM1
 
     def _run_nevpt2_mix(self, cas_norb, cas_nelec, e_tot):
-        """State-specific CASCI per spin block in the SA orbitals, then NEVPT2.
-
-        The solver is rebuilt, not copied: a stale spin penalty lets root 0 of
-        the Ms=0 block come back as the (lower) triplet.
-        """
+        """CASCI per spin block in the SA orbitals, then NEVPT2."""
         print("=" * 45)
         e_casci_nevpt2 = []
 
@@ -186,15 +180,11 @@ class CASSCFSolver(BaseCASSolver):
             mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
 
             # Fresh solver: same construction as _apply_state_averaging.
-            fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=spin)
+            ss_target = 0.5 * spin * (0.5 * spin + 1)
+            fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=ss_target)
             fci_solver.spin = spin
             fci_solver.nroots = nevpt2_nroots[i]
             fci_solver.max_cycle = max_cycle
-
-            if self.settings.e_shift is not None:
-                ss = 0.5 * spin * (0.5 * spin + 1)
-                mc_ci.fix_spin_(shift=self.settings.e_shift, ss=ss)
-
             mc_ci.fcisolver = fci_solver
 
             fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
@@ -206,7 +196,6 @@ class CASSCFSolver(BaseCASSolver):
                 )
 
             # Verify the spin sector: the penalty must actually have held.
-            ss_target = 0.5 * spin * (0.5 * spin + 1)
             vecs = fcivec if isinstance(fcivec, (list, tuple)) else [fcivec]
             for r in np.atleast_1d(nevpt2_roots[i]):
                 ss = mc_ci.fcisolver.spin_square(vecs[r], cas_norb, mc_ci.nelecas)[0]
