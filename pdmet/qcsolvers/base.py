@@ -271,7 +271,7 @@ class BaseSolver:
             print(f"  [container] lo_view failed ({e}); using embedding rows")
             return None
 
-    def _print_container_composition(self, C, n, max_rows=40):
+    def _print_container_composition(self, C, n, max_rows=200):
         """NO composition vs the impurity block -- for picking molist indices."""
         w = np.abs(C) ** 2
         w_imp = w[: self.Nimp, :].sum(axis=0)
