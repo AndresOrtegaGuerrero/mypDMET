@@ -655,6 +655,14 @@ class pDMET:
             self.Nimp,
             chempot,
         )
+        # container printout: label-resolved for iao+pao, numbers otherwise
+        self.qcsolver.lo_view = None
+        if "iao" in str(self.lobasis.method):
+            self.qcsolver.lo_view = (
+                self.emb_orbs[0],
+                self.local.lo_labels,
+                self._impOrbs,
+            )
 
         # Build PDFTContext only when needed
         pdft_context = None

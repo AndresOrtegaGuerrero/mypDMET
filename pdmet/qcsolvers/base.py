@@ -13,6 +13,9 @@ class BaseSolver:
         self.is_KROHF = is_KROHF
         self.solver = self.settings.name
         self.SS = 0.5 * self.settings.twoS * (0.5 * self.settings.twoS + 1)
+        self.lo_view = (
+            None  # (emb_orbs, lo_labels, impOrbs); set by dmet.py for iao+pao
+        )
         self._build_dummy_molecule()
 
     def _build_dummy_molecule(self):
@@ -70,45 +73,39 @@ class BaseSolver:
         return lib.einsum("Lij,Lkl->ijkl", self.B, self.B, optimize=True)
 
     def _ensure_eri(self, mf=None):
-        """Ensure a mean-field object has embedding ERIs in ``mf._eri``.
+        """Ensure ``mf._eri`` contains the embedding ERIs.
 
-        Some PySCF paths (e.g. FCI, NEVPT2) access ``mf._eri`` directly and, if it is
-        missing, incorrectly evaluate ``int2e`` on the dummy embedding molecule. This
-        helper lazily builds the embedding ERI
+        Some PySCF routines (e.g. FCI and NEVPT2) access ``mf._eri``
+        directly. If missing, they may evaluate ``int2e`` on the dummy
+        embedding molecule instead. This helper reconstructs the embedding
+        ERIs from the DF 3-center tensor ``B`` and stores them in PySCF's
+        packed format.
 
-            (ij|kl) = Σ_L B_Lij B_Lkl
-
-        from the DF factors and stores the 8-fold packed result in ``mf._eri``.
-
-        The ERI is assembled directly in packed form (no dense ``nemb^4`` tensor),
-        reducing peak memory to ~``nemb^4/4``. Construction remains O(``nemb^4``) in
-        the embedding size. For large embeddings, prefer DMRG with compressed NEVPT2
-        (``use_compress_nevpt2=True``), which avoids ``_eri`` entirely.
-
-        The operation is idempotent: if ``mf._eri`` already contains a valid
-        ``float64`` array, no work is done.
+        The ERIs are built directly in packed form, avoiding a dense
+        ``nemb^4`` intermediate. If ``mf._eri`` is already populated,
+        no work is performed.
 
         Parameters
         ----------
         mf : pyscf mean-field, optional
-            Mean-field object to receive ``_eri``. Defaults to ``self.mf``. Useful
-            when attaching ERIs to temporary CASCI/NEVPT2 mean-field objects.
+            Mean-field object receiving ``_eri``. Defaults to ``self.mf``.
         """
         from pyscf import ao2mo
 
         if mf is None:
             mf = self.mf
+
         if (
             getattr(mf, "_eri", None) is not None
             and getattr(mf._eri, "dtype", None) == np.float64
         ):
-            return  # already populated, nothing to do
-        # Direct packed build: pack the symmetric (i,j) pair index of B once,
-        # then (ij|kl) = B_sym^T @ B_sym is already the 4-fold-packed ERI; no
-        # dense Norb^4 intermediate. restore(8) gives the 8-fold _eri pyscf
-        # consumes. Identical numbers to the dense einsum, lower peak memory.
-        B_sym = lib.pack_tril(np.asarray(self.B))  # (naux, npair=Norb(Norb+1)/2)
-        eri_s4 = lib.dot(B_sym.T, B_sym)  # (npair, npair) 4-fold-packed ERI
+            return  # already populated
+
+        # Pack AO pairs once, then build:
+        # (ij|kl) = B_sym.T @ B_sym in 4-fold packed form.
+        # restore(8) converts it to PySCF's packed _eri format.
+        B_sym = lib.pack_tril(np.asarray(self.B))  # (naux, npair)
+        eri_s4 = lib.dot(B_sym.T, B_sym)  # (npair, npair)
         mf._eri = ao2mo.restore(8, eri_s4, self.Norb)
 
     def _setup_mf(self):
@@ -159,11 +156,9 @@ class BaseSolver:
                     f"(Brillouin's theorem). Set run_emb_scf=True for this "
                     f"solver -- was it changed after initialize()?"
                 )
-            # CAS-DMET container mode: no SCF. The mf only holds the
-            # embedding integrals + orbitals; the CAS/DMRG solver does all
-            # the solving and NEVPT2 corrects the energy from the KROHF
-            # low level. Converging an embedded HF here would only rotate
-            # away the designed embedding orbitals.
+            # CAS-DMET container mode: no SCF. The mean-field object only stores
+            # embedding integrals and orbitals; CAS/DMRG and NEVPT2 handle the
+            # electronic structure. SCF is skipped to preserve the embedding orbitals."""
             self._setup_mf_container()
             return
 
@@ -260,6 +255,22 @@ class BaseSolver:
         nfrac = int(((n > 0.05) & (n < 1.95)).sum())
         print(f"  [container] fractional occupations (0.05 < n < 1.95): {nfrac}")
 
+    def _lo_view(self, C):
+        """(C_lo, labels, impurity LO rows) from lo_view, or None."""
+        if getattr(self, "lo_view", None) is None:
+            return None
+        try:
+            emb, labels, imp_mask = self.lo_view
+            emb = np.asarray(emb)
+            if emb.ndim == 3:  # (nkpt, nlo, Nemb) -> Gamma
+                emb = emb[0]
+            labels = [" ".join(str(label).split()) for label in np.asarray(labels)]
+            imp_lo = np.where(np.asarray(imp_mask).astype(bool))[0]
+            return emb @ np.asarray(C), labels, imp_lo
+        except Exception as e:
+            print(f"  [container] lo_view failed ({e}); using embedding rows")
+            return None
+
     def _print_container_composition(self, C, n, max_rows=40):
         """NO composition vs the impurity block -- for picking molist indices."""
         w = np.abs(C) ** 2
@@ -267,6 +278,45 @@ class BaseSolver:
         sel = np.where(((n > 0.02) & (n < 1.98)) | (w_imp > 0.5))[0]
         if sel.size == 0:
             return
+
+        lo = self._lo_view(C)
+        if lo is not None:
+            import re
+
+            C_lo, labels, imp_lo = lo
+            W = np.abs(C_lo) ** 2
+            # shell columns from the impurity selection itself, in its order
+            shell_rows = {}
+            for r in imp_lo:
+                p = labels[r].split()
+                sh = re.match(r"\d+[a-z]", p[2]).group(0)  # "3dxy" -> "3d"
+                shell_rows.setdefault(f"{p[1]}{sh}", []).append(int(r))
+            print(
+                "  [container] NO composition in the IAO+PAO basis "
+                "(fractional or imp-weight > 0.5) -- molist uses these NO "
+                "indices (0-based):"
+            )
+            print(
+                "      NO       n   w_imp "
+                + "".join(f"{nm:>7}" for nm in shell_rows)
+                + "   top LO components"
+            )
+            for row_i, i in enumerate(sel):
+                if row_i >= max_rows:
+                    print(f"      ... {sel.size - max_rows} more suppressed")
+                    break
+                cols = "".join(
+                    f"{W[rows, i].sum():7.2f}" for rows in shell_rows.values()
+                )
+                top = np.argsort(W[:, i])[::-1][:3]
+                comp = "  ".join(
+                    f"{' '.join(labels[k].split()[1:])}({W[k, i]:.2f})"
+                    for k in top
+                    if W[k, i] > 1e-2
+                )
+                print(f"   {i:6d}  {n[i]:6.3f}  {w_imp[i]:5.2f} {cols}   {comp}")
+            return
+
         print(
             "  [container] NO composition (fractional or imp-weight > 0.5) "
             "-- molist uses these NO indices (0-based):"
