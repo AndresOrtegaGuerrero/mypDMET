@@ -261,11 +261,7 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
         return (e_tot, np.asarray(e_casci_nevpt2))
 
     def _nevpt2_from_mc_ci(self, mc_ci, ms, cs, es, roots, cas_norb):
-        # mrpt.NEVPT has no DF integral path; the compressed (MPS-NEVPT2)
-        # variant goes through pyblock2 and doesn't read _eri, so only the
-        # standard branch needs the explicit embedding ERI.
-        if not self.settings.dmrg.use_compress_nevpt2:
-            self._ensure_eri(mc_ci._scf)
+        self._ensure_eri(mc_ci._scf)
 
         e_casci_nevpt2 = []
 
