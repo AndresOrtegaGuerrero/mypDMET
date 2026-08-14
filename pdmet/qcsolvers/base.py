@@ -173,11 +173,11 @@ class BaseSolver:
         else:  # "embedding"
             # Preserve the Schmidt impurity+bath orbitals exactly.
             C = np.eye(self.Norb)
-            n_diag = np.diag(dm_tot).copy()
+            orb_occ = np.diag(dm_tot).copy()
 
             # CASSCF's core window is positional: warn when the first nb raw
             # embedding orbitals do not actually carry the occupied density.
-            core_charge = float(n_diag[:nb].sum())
+            core_charge = float(orb_occ[:nb].sum())
             if abs(core_charge - 2.0 * nb) > 0.5:
                 print(
                     f"  WARNING(container): first {nb} embedding orbitals "
@@ -200,9 +200,9 @@ class BaseSolver:
             f"{self.settings.emb_orbitals} orbitals; "
             f"E(low-level, embedding) = {self.mf.e_tot:.10f}"
         )
-        self._print_container_occupations(n_diag, nb, na)
+        self._print_container_occupations(orb_occ, nb, na)
         if self.settings.emb_orbitals == "natural":
-            self._print_container_composition(C, n_diag)
+            self._print_container_composition(C, orb_occ)
 
     def _print_container_occupations(self, n, nb, na):
         """Guess occupations at the closed|open and open|virtual boundaries."""
