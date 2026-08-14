@@ -74,12 +74,14 @@ class Solver(str, Enum):
     FCI = "FCI"
     DMRG = "DMRG"
     SHCI = "SHCI"
-    # CASCI family
+    # CASCI family  (DMRG-* = block2, CHEMPS2-* = CheMPS2)
     CASCI = "CASCI"
     DMRG_CI = "DMRG-CI"
+    CHEMPS2_CI = "CHEMPS2-CI"
     # CASSCF family
     CASSCF = "CASSCF"
     DMRG_SCF = "DMRG-SCF"
+    CHEMPS2_SCF = "CHEMPS2-SCF"
     SS_CASSCF = "SS-CASSCF"
     SA_CASSCF = "SA-CASSCF"
     SS_DMRG_SCF = "SS-DMRG-SCF"
@@ -197,10 +199,10 @@ class SCFSettings:
     Settings for the SCF optimization in DMET self-consistency
     """
 
-    method: SCFMethod = SCFMethod.BFGS
+    method: SCFMethod = SCFMethod.LBFGS_B
     threshold: float = 1e-4
     maxcycle: int = 100
-    CF_type: CFType = CFType.F
+    CF_type: CFType = CFType.DIAGF
     damping: float = 1.0  # no damping
     use_DIIS: bool = False
     DIIS_start: int = 1
@@ -236,6 +238,9 @@ class EmbeddingSettings:
             {1: ["3d"], 2: ["2p"]}             # by atom index
     num_bath :  int -  Used to keep the no. of baths are the same as in the 1st cycle of SCF
     bath_truncation : bool  -Whether to use bath_truncatio or not.
+    bath_threshold : float - env eigenvalues closer than this to 0 or 2 are
+        dropped from the bath. Must sit ABOVE the SCF eigenvalue noise
+        (~conv_tol^(1/2)); 1e-10 would make Nbath depend on convergence noise.
     use_GDF : bool - Whether to use GDF for ERI transformation.
     xc : str, DFT the functional for GDF, e.g., "PBE0"
     xc_range : float range separation (auto 0.2 for RSH-PBE0)
@@ -252,6 +257,7 @@ class EmbeddingSettings:
     imp_orbital_filter: Optional[dict] = None
     num_bath: Optional[int] = None
     bath_truncation: bool = True
+    bath_threshold: float = 1.0e-6
     use_GDF: bool = True
     xc: Optional[str] = None
     xc_omega: Optional[float] = None
@@ -286,6 +292,20 @@ class SolverSettings:
     nto_export: bool = False  # also write NTO cubes at the end of one_shot()/run()?
     nto_npairs: int = 2  # how many top (donor, acceptor) pairs per root
     nto_lambda_floor: float = 1e-3  # skip pairs below this weight even if asked
+    ci_max_det: int = 8  # dominant determinants printed per CI state
+    ci_print_tol: float = 0.1  # |coeff| threshold for the printed determinant table
+    # CAS-DMET container mode: skip the embedded HF/ROHF entirely -- the mf
+    # object only holds integrals + orbitals, and the CAS/DMRG solver does
+    # ALL the solving (NEVPT2 corrects the energy from the KROHF low level).
+    run_emb_scf: bool = True  # False = container mode (CAS/DMRG/FCI only)
+    # Which orbitals the container holds (only used when run_emb_scf=False):
+    #   "embedding" -> the impurity+bath orbitals AS CONSTRUCTED (identity);
+    #                  molist indices == embedding orbital indices. NOTE:
+    #                  CASSCF's core window is positional -- sort the active
+    #                  space with molist.
+    #   "natural"   -> natural orbitals of the embedding guess density
+    #                  (same space, occupation-sorted -> sane core window).
+    emb_orbitals: str = "embedding"
     verbose: int = 0
     max_memory: int = 4000  # For impurity solver in MB
     cas_solver: CASType = CASType.FCI
@@ -335,6 +355,30 @@ class SolverSettings:
                 raise ValueError("nto_npairs must be >= 1.")
             if self.nto_lambda_floor < 0:
                 raise ValueError("nto_lambda_floor must be non-negative.")
+
+        if self.ci_max_det < 1:
+            raise ValueError("ci_max_det must be >= 1.")
+        if not (0.0 < self.ci_print_tol < 1.0):
+            raise ValueError("ci_print_tol must be in (0, 1).")
+
+        if self.emb_orbitals not in ("embedding", "natural"):
+            raise ValueError(
+                f"emb_orbitals must be 'embedding' or 'natural', "
+                f"got {self.emb_orbitals!r}"
+            )
+        if not self.run_emb_scf:
+            # Container mode is only valid for solvers that optimize orbitals
+            # (CASSCF/DMRG-SCF), tolerate non-canonical ones (CASCI/DMRG-CI/
+            # SHCI), or are orbital-invariant (FCI). MP2/CCSD amplitudes
+            # assume a converged canonical mean field (Brillouin's theorem).
+            name = str(self.name)
+            ok = any(t in name for t in ("CAS", "DMRG", "SHCI", "FCI", "CHEMPS2"))
+            if not ok:
+                raise ValueError(
+                    f"run_emb_scf=False (CAS-DMET container mode) is not "
+                    f"valid for solver {name}: HF/MP2/CCSD require a "
+                    f"converged embedded mean field."
+                )
 
         if self.nroots > 1:
             if self.state_percent is not None:

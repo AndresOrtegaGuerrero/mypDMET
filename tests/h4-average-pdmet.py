@@ -67,49 +67,38 @@ w90.kernel()
 tchkfile.save_w90(w90, "chk_w90")
 kmf = tchkfile.load_kmf(khf, "chk_HF")
 """================================"""
-""" Run DMET """
+""" Run DMET -- DMRG-CI (fused NEVPT2) vs CASCI (exact FCI reference) """
 """================================"""
-pdmet = dmet.pDMET(
-    cell,
-    kmf,
-    w90,
-    solver="SS-DMRG-SCF",
-)
+# Single-state (ground) + NEVPT2. DMRG-CI takes the fused path; CASCI is the
+# exact FCI at the SAME fixed orbitals, so the two NEVPT2 totals should agree
+# for cas(4,4). ("CHEMPS2-CI" / "SS-DMRG-SCF" are also valid drop-ins.)
+SOLVERS = ["DMRG-CI", "CASCI"]
 
-dmrg_path = os.path.abspath("./tmp")
-if not os.path.exists(dmrg_path):
-    os.mkdir(dmrg_path)
 
-pdmet.kmf_chkfile = "chk_HF"
-pdmet.lobasis.w90_chkfile = "chk_w90"
-pdmet.emb.impCluster = [1]
-pdmet.emb.impOrbs_threshold = 1.5
-pdmet.solver.twoS = 0
-pdmet.solver.cas = (4, 4)
-pdmet.solver.dmrg = DMRGSettings()
-pdmet.solver.dmrg.scratch_dir = dmrg_path
-pdmet.solver.dmrg.runtime_dir = dmrg_path
+def run(solver_name):
+    print("\n" + "#" * 60 + f"\n# SOLVER = {solver_name}\n" + "#" * 60)
+    scratch = os.path.abspath(os.path.join("./tmp", solver_name))
+    os.makedirs(scratch, exist_ok=True)
 
-# State-average Specific + NEVPT2 example
-pdmet.solver.nevpt2_roots = [0]
-pdmet.solver.nevpt2_nroots = 1
-pdmet.solver.nroots = 1
+    pdmet = dmet.pDMET(cell, kmf, w90, solver=solver_name)
+    pdmet.kmf_chkfile = "chk_HF"
+    pdmet.lobasis.w90_chkfile = "chk_w90"
+    pdmet.emb.impCluster = [1]
+    pdmet.emb.impOrbs_threshold = 1.5
+    pdmet.solver.twoS = 0
+    pdmet.solver.cas = (4, 4)
+    pdmet.solver.dmrg = DMRGSettings()
+    pdmet.solver.dmrg.scratch_dir = scratch
+    pdmet.solver.dmrg.runtime_dir = scratch
 
-# State-average over 2 states with equal weights
-# weight = 1.0 / 3
-# pdmet.solver.nevpt2_roots = list(range(0, 3))
-# pdmet.solver.state_average_ = [weight, weight, weight]
-# pdmet.solver.nevpt2_nroots = 3
-# pdmet.solver.e_shift = 0.2
+    pdmet.solver.nevpt2_roots = [0]
+    pdmet.solver.nevpt2_nroots = 1
+    pdmet.solver.nroots = 1
 
-# State average mixing example
-# pdmet.solver.state_average_mix_ = [
-#     StateConfig(spin=0, roots=1, weights=[0.5]),
-#     StateConfig(spin=2, roots=2, weights=[0.25, 0.25]),
-# ]
-# pdmet.solver.nevpt2_roots = [[0], [0, 1]]
-# pdmet.solver.nevpt2_nroots = [1, 2]
-# pdmet.solver.nroots = 3
+    pdmet.initialize()
+    pdmet.one_shot()
+    return pdmet
 
-pdmet.initialize()
-pdmet.one_shot()
+
+for _solver in SOLVERS:
+    run(_solver)

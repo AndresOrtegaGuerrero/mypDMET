@@ -25,7 +25,7 @@ class CASSCFSolver(BaseCASSolver):
     ):
         """
         Run CASSCF in the embedding basis
-        fci_solver : str - 'FCI' or 'ChemMPS2' (For DMRG-CI)
+        fci_solver : str - 'FCI' or 'CheMPS2' (For CHEMPS2-SCF)
 
         Returns
         -------
@@ -42,11 +42,17 @@ class CASSCFSolver(BaseCASSolver):
         mo = self._mo_guess(self.mc)
 
         e_tot, _, fcivec = self.mc.kernel(mo)[:3]
+        if not self.mc.converged:
+            print("WARNING: CASSCF not converged -- one retry from last orbitals")
+            e_tot, _, fcivec = self.mc.kernel(self.mc.mo_coeff)[:3]
+            if not self.mc.converged:
+                raise RuntimeError(
+                    "CASSCF did not converge after retry; refusing to build "
+                    "RDMs/energies from an unconverged wavefunction."
+                )
         if state_specific_ is None:
             if state_average_ is not None or state_average_mix_ is not None:
                 e_tot = np.asarray(self.mc.e_states)
-        if not self.mc.converged:
-            print("WARNING: CASSCF not converged")
 
         self.mo_nat = self.mc.mo_coeff
         self.mo = self.mc.mo_coeff
@@ -84,11 +90,12 @@ class CASSCFSolver(BaseCASSolver):
             solvers = []
             weight_list = []
             for solver in state_average_mix_:
-                fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=solver.spin)
+                ss = 0.5 * solver.spin * (0.5 * solver.spin + 1)
+                fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=ss)
                 fci_solver.spin = solver.spin
                 fci_solver.nroots = solver.roots
                 fci_solver.max_cycle = (
-                    120  # Hardcoded for now, can be made a user input if needed
+                    300  # Hardcoded for now, can be made a user input if needed
                 )
                 solvers.append(fci_solver)
                 weight_list += solver.weights
@@ -134,9 +141,6 @@ class CASSCFSolver(BaseCASSolver):
             )
             neleca_i, nelecb_i = nelecas_list[i]
             self._print_ci_analysis(civec, cas_norb, neleca_i, nelecb_i, i)
-            # self._print_ci_analysis(
-            #    civec, cas_norb, self.mc.nelecas[0], self.mc.nelecas[1], i
-            # )
             RDM1s.append(rdm1)
             e_cells.append(e_imp)
 
@@ -159,14 +163,14 @@ class CASSCFSolver(BaseCASSolver):
         return e_cell, RDM1
 
     def _run_nevpt2_mix(self, cas_norb, cas_nelec, e_tot):
-        from copy import copy
-
+        """CASCI per spin block in the SA orbitals, then NEVPT2."""
         print("=" * 45)
         e_casci_nevpt2 = []
 
         solvers = self.mc.fcisolver.fcisolvers
         nevpt2_roots = self.settings.nevpt2_roots
         nevpt2_nroots = self.settings.nevpt2_nroots
+        max_cycle = getattr(self.settings, "nevpt2_ci_max_cycle", 500)
 
         # Iterate for each solver
         for i, solver in enumerate(solvers):
@@ -174,9 +178,33 @@ class CASSCFSolver(BaseCASSolver):
             nelecb = (cas_nelec - spin) // 2
             neleca = cas_nelec - nelecb
             mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
-            mc_ci.fcisolver = copy(solver)
-            mc_ci.fcisolver.nroots = nevpt2_nroots[i]
+
+            # Fresh solver: same construction as _apply_state_averaging.
+            ss_target = 0.5 * spin * (0.5 * spin + 1)
+            fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=ss_target)
+            fci_solver.spin = spin
+            fci_solver.nroots = nevpt2_nroots[i]
+            fci_solver.max_cycle = max_cycle
+            mc_ci.fcisolver = fci_solver
+
             fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
+
+            if not mc_ci.converged:
+                raise RuntimeError(
+                    f"NEVPT2 CASCI block {i} (2S = {spin}) did not converge in "
+                    f"{max_cycle} cycles; raise settings.nevpt2_ci_max_cycle."
+                )
+
+            # Verify the spin sector: the penalty must actually have held.
+            vecs = fcivec if isinstance(fcivec, (list, tuple)) else [fcivec]
+            for r in np.atleast_1d(nevpt2_roots[i]):
+                ss = mc_ci.fcisolver.spin_square(vecs[r], cas_norb, mc_ci.nelecas)[0]
+                if abs(ss - ss_target) > 0.1:
+                    print(
+                        f"  WARNING: block {i} root {r}: <S^2> = {ss:.4f}, "
+                        f"expected {ss_target:.4f} for 2S = {spin}. Wrong spin "
+                        f"sector -- raise nevpt2_nroots and select by <S^2>."
+                    )
 
             # NTOs from the pristine wavefunction, BEFORE NEVPT2 canonicalizes.
             self._compute_ntos(mc_ci, fcivec, nevpt2_roots[i], cas_norb)

@@ -97,16 +97,22 @@ class BaseCASSolver(BaseSolver):
         mcscf.mc_ao2mo routes through the 3-center tensor instead of
         looking for `mf._eri` (which no longer exists).
         """
-        if (
-            hasattr(self.mf, "with_df")
-            and self.mf.with_df is not None
-            and not getattr(mc, "with_df", None)
-        ):
-            mc = mc.density_fit(with_df=self.mf.with_df)
-            self.mc = mc  # rebind so the caller sees the wrapped object
+        if hasattr(self.mf, "with_df") and self.mf.with_df is not None:
+            if not getattr(mc, "with_df", None):
+                mc = mc.density_fit(with_df=self.mf.with_df)
+                self.mc = mc  # rebind so the caller sees the wrapped object
+            else:
+                # mf (and its B tensor) is rebuilt on every _setup_mf; without
+                # this refresh the CAS integrals keep the previous cycle's B.
+                mc.with_df = self.mf.with_df
         mc.mol = self.mol
         mc._scf = self.mf
         mc.ncas = cas_norb
+        # parity guard: a mismatch would silently change the CAS spin
+        assert (cas_nelec - self.mol.spin) % 2 == 0, (
+            f"cas_nelec={cas_nelec} incompatible with twoS={self.mol.spin}: "
+            "put the open shell(s) inside the active space."
+        )
         nelecb = (cas_nelec - self.mol.spin) // 2
         mc.nelecas = (cas_nelec - nelecb, nelecb)
         ncorelec = self.mol.nelectron - sum(mc.nelecas)
@@ -134,12 +140,17 @@ class BaseCASSolver(BaseSolver):
         return coredm1 + casdm1
 
     def _print_ci_analysis(
-        self, ci, cas_norb, neleca, nelecb, root, tol=0.1, max_det=4
+        self, ci, cas_norb, neleca, nelecb, root, tol=None, max_det=None
     ):
         """
         Per-state CI summary:
             weight  |α,β>   (SCS: 2 / u / d / 0 per orbital)
         plus natural-orbital occupations from the 1-RDM.
+
+        tol / max_det default to settings.ci_print_tol / settings.ci_max_det
+        (explicit arguments still override). They truncate ONLY the printed
+        determinant table; the natural occupancies always come from the FULL
+        CI vector's 1-RDM and are unaffected by the truncation.
 
         Conventions
         -----------
@@ -152,6 +163,10 @@ class BaseCASSolver(BaseSolver):
             (α=0, β=1) -> 'd'   single β
             (α=0, β=0) -> '0'   empty
         """
+        if tol is None:
+            tol = getattr(self.settings, "ci_print_tol", 0.1)
+        if max_det is None:
+            max_det = getattr(self.settings, "ci_max_det", 8)
         from pyscf.fci import addons, direct_spin1
 
         # Natural-orbital occupations (eigenvalues of the 1-RDM, descending).
@@ -184,7 +199,15 @@ class BaseCASSolver(BaseSolver):
             det = f"{''.join(map(str, a))},{''.join(map(str, b))}"
             scs = " ".join(_scs[(ai, bi)] for ai, bi in zip(a, b))
             print(f"    {coeff:+.4f} |{det}>   ({scs})")
-        print(f"    Natural occupancies: {np.round(occ, 4).tolist()}")
+        # Coverage: how much of the wavefunction the table accounts for.
+        # ~0.99 => extra rows are noise; <<1 => strongly multireference,
+        # lower ci_print_tol to see the rest.
+        shown = sum(abs(c) ** 2 for c, _, _ in dets)
+        print(
+            f"    Sum|c|^2 shown = {shown:.4f} "
+            f"({len(dets)} dets, tol {tol:g}, max_det {max_det})"
+        )
+        print(f"    Natural occupancies (full CI 1-RDM): {np.round(occ, 4).tolist()}")
 
     def _impurity_energy_from_cas_naive(self, mc, cas_norb, RDM1, casdm2):
         Nimp = self.Nimp

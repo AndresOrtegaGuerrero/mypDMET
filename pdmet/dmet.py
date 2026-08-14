@@ -25,6 +25,7 @@ from scipy import optimize
 from pdmet import localbasis, diis, df_hamiltonian
 from pdmet.schmidtbasis import get_bath_using_RHF_1RDM
 from pdmet.tools import tchkfile, tplot, tprint, tunix, misc
+from pdmet.tools.optional import to_numpy
 from pdmet.lib import libdmet
 from pdmet.settings import (
     EmbeddingSettings,
@@ -162,6 +163,10 @@ class pDMET:
             self.madelung = 0.0
             return
 
+        assert self.exxdiv == "ewald", (
+            f"exxdiv='{self.exxdiv}': the closed-form Madelung constant below "
+            "is only valid for 'ewald' (or None)."
+        )
         from pyscf.pbc import tools
 
         self.madelung = tools.pbc.madelung(self.cell, self.kmf.kpts)
@@ -613,7 +618,19 @@ class pDMET:
         # k-points   : chempot varies
         # ------------------------------------------------------------------
         if self._is_gamma:
-            emb_guess_1RDM = self.emb_mf_1RDM
+            if self._is_ROHF and self.local.loc_1RDM_a_kpts is not None:
+                # (Da, Db) projected guess: keeps the SOMO in one spin channel.
+                # A total-DM guess is split (D/2, D/2) by pyscf ROHF, which
+                # erases the spin polarization we already know exactly.
+                Da = self.local.loc_kpts_to_emb(
+                    self.local.loc_1RDM_a_kpts, self.emb_orbs
+                )
+                Db = self.local.loc_kpts_to_emb(
+                    self.local.loc_1RDM_b_kpts, self.emb_orbs
+                )
+                emb_guess_1RDM = np.array([Da, Db])
+            else:
+                emb_guess_1RDM = self.emb_mf_1RDM
         else:
             emb_FOCK = self.emb_OEI + self.emb_coreJK
             emb_guess_1RDM = self.local.get_emb_guess_1RDM(
@@ -638,6 +655,14 @@ class pDMET:
             self.Nimp,
             chempot,
         )
+        # container printout: label-resolved for iao+pao, numbers otherwise
+        self.qcsolver.lo_view = None
+        if "iao" in str(self.lobasis.method):
+            self.qcsolver.lo_view = (
+                self.emb_orbs[0],
+                self.local.lo_labels,
+                self._impOrbs,
+            )
 
         # Build PDFTContext only when needed
         pdft_context = None
@@ -800,6 +825,7 @@ class pDMET:
             is_ROHF=self._is_ROHF,
             num_bath=self.emb.num_bath,
             bath_truncation=self.emb.bath_truncation,
+            threshold=self.emb.bath_threshold,
         )
         self.emb_core_orbs = np.hstack([emb_orbs, core_orbs])
 
@@ -823,6 +849,45 @@ class pDMET:
 
         return emb_orbs, core_orbs, Nbath, Nelec_in_emb
 
+    def _check_loc_1RDM_vs_ref(self, warn_tol=1e-4, fail_tol=1e-2):
+        """At umat=0 / FOCK OEH the refilled density must equal the mean-field
+        reference: loc_1RDM == C^H S D S C (densities transform with S, unlike
+        operators). Catches occupation-reassignment, exxdiv and bath-threshold
+        problems before they silently corrupt the bath.
+
+        Two tiers. A genuine misassignment displaces a whole electron
+        (err ~ 0.1-1) -> fail_tol=1e-2 catches it with margin. Below that,
+        the residual is reference noise: ~sqrt(conv_tol) SCF residual, plus
+        eigenvector rotations within quasi-degenerate open-shell manifolds
+        (coupling/gap -- easily 1e-4 in Fe-S clusters) -> warn only, and
+        tighten kmf.conv_tol if it bothers you.
+        """
+        dm = np.asarray(to_numpy(self.kmf.make_rdm1()))
+        if dm.ndim == 4:  # ROHF: (2, nk, nao, nao) -> total
+            dm = dm[0] + dm[1]
+        S = np.asarray(self.cell.pbc_intor("int1e_ovlp", hermi=1, kpts=self.kpts))
+        C = self.local.ao2lo
+        dm_lo = np.einsum(
+            "kui,kuv,kvw,kwx,kxj->kij", C.conj(), S, dm, S, C, optimize=True
+        )
+        err = abs(np.asarray(self.loc_1RDM_kpts) - dm_lo).max()
+        assert err < fail_tol, (
+            f"loc 1-RDM from OEH refill deviates from the SCF reference by "
+            f"{err:.2e} (> {fail_tol:.0e}): an electron was likely assigned "
+            "to a different orbital (Roothaan vs mo_ea selection, exxdiv "
+            "reordering, or an unconverged reference)."
+        )
+        if err < 1e-5:
+            level = "OK"
+        elif err < warn_tol:
+            level = "OK, but tighten kmf.conv_tol"
+        else:
+            level = (
+                "WARNING: reference-noise level is high -- tighten "
+                "kmf.conv_tol and check for quasi-degenerate open shells"
+            )
+        tprint.print_msg(f"   |loc_1RDM - reference| = {err:.2e}  ({level})")
+
     def check_exact(self, error=1.0e-6):
         """
         Do one-shot DMET, only the chemical potential is optimized
@@ -839,6 +904,8 @@ class pDMET:
                 umat, self.mask4Gamma, OEH_type=self.emb.OEH_type, dft_HF=None
             )
         )
+        if not self.emb.dft_CF:
+            self._check_loc_1RDM_vs_ref()
 
         self.emb_orbs, self.core_orbs, self.Nbath, self.Nelec_in_emb = (
             self.bath_construction(self.loc_1RDM_R0, self._impOrbs)
@@ -890,6 +957,13 @@ class pDMET:
                     dft_HF=self.emb.dft_HF,
                 )
             )
+            # Only meaningful when the OEH is the untouched mean-field Fock
+            if (
+                np.ndim(umat) == 0
+                and float(umat) == 0.0
+                and self.emb.OEH_type == "FOCK"
+            ):
+                self._check_loc_1RDM_vs_ref()
 
         self.emb_orbs, self.core_orbs, self.Nbath, self.Nelec_in_emb = (
             self.bath_construction(self.loc_1RDM_R0, self._impOrbs)
