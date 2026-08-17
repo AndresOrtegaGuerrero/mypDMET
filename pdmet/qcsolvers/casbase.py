@@ -23,7 +23,8 @@ class BaseCASSolver(BaseSolver):
 
     def _compute_ntos(self, mc, fcivec, roots, cas_norb):
         """Transition densities + NTOs for ground -> each root, accumulated onto
-        self.t_dm1s / self.ntos_per_root (index i = root i; root 0 = ground NOs).
+        self.t_dm1s / self.ntos_per_root (POSITIONAL: entry i = i-th computed
+        root; equals root i only when roots == range(n), single spin block).
 
         Independent of NEVPT2. MUST run on the PRISTINE wavefunction, before any
         mrpt.NEVPT(...).kernel() canonicalizes mc in place (that would corrupt the
@@ -455,17 +456,18 @@ class BaseCASSolver(BaseSolver):
         return lam[keep], Vh[keep].conj().T, U[:, keep]
 
     @staticmethod
-    def _fix_orbital_signs(C):
-        """Anchor each column's largest entry to be real-positive -- SVD vectors
-        are sign/phase-arbitrary, so this keeps cube plots stable across runs.
+    def _fix_orbital_phases(V, U):
+        """Anchor each hole column's largest entry real-positive; apply the SAME
+        phase to its particle partner so U diag(sqrt(lam)) V^H still rebuilds T.
         """
-        out = C.copy()
-        for j in range(C.shape[1]):
-            i_max = np.argmax(np.abs(C[:, j]))
-            phase = C[i_max, j]
+        V, U = V.copy(), U.copy()
+        for j in range(V.shape[1]):
+            phase = V[np.argmax(np.abs(V[:, j])), j]
             if phase != 0:
-                out[:, j] *= np.conj(phase) / np.abs(phase)
-        return out
+                phase = np.conj(phase) / np.abs(phase)
+                V[:, j] *= phase
+                U[:, j] *= phase
+        return V, U
 
     def _transition_dm1(self, mc_ci, fcivec, root, cas_norb):
         """Transition 1-RDM (ground -> root) + NTOs. SVD in the CAS basis (where
@@ -484,11 +486,8 @@ class BaseCASSolver(BaseSolver):
 
         orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
         t_dm1_emb = orbcas @ t_dm1_cas @ orbcas.T
-        nto_info = {
-            "lambdas": lam,
-            "V_hole": self._fix_orbital_signs(orbcas @ V_cas),
-            "U_part": self._fix_orbital_signs(orbcas @ U_cas),
-        }
+        V_emb, U_emb = self._fix_orbital_phases(orbcas @ V_cas, orbcas @ U_cas)
+        nto_info = {"lambdas": lam, "V_hole": V_emb, "U_part": U_emb}
         return t_dm1_emb, nto_info
 
     def _nelecas_per_state(self, n_states):

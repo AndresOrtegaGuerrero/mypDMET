@@ -342,11 +342,8 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
         lam, V_cas, U_cas = self._ntos_from_tdm1_cas(t_dm1_cas)
         orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
         t_dm1_emb = orbcas @ t_dm1_cas @ orbcas.T
-        nto_info = {
-            "lambdas": lam,
-            "V_hole": self._fix_orbital_signs(orbcas @ V_cas),
-            "U_part": self._fix_orbital_signs(orbcas @ U_cas),
-        }
+        V_emb, U_emb = self._fix_orbital_phases(orbcas @ V_cas, orbcas @ U_cas)
+        nto_info = {"lambdas": lam, "V_hole": V_emb, "U_part": U_emb}
         return t_dm1_emb, nto_info
 
     def _print_ci_dmrg(self, mc_ci):

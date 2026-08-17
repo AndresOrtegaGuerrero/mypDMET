@@ -64,19 +64,30 @@ def test_svd_reconstructs_T():
     assert np.allclose(T_rebuilt, T, atol=1e-10)
 
 
-def test_fix_orbital_signs_is_deterministic():
-    """Largest entry of each column becomes positive; C and -C give same result."""
+def test_fix_orbital_phases_is_deterministic():
+    """Largest hole entry positive; a joint (V,U) -> (-V,-U) flip is undone."""
     rng = np.random.default_rng(1)
-    C = rng.standard_normal((6, 3))
+    V = rng.standard_normal((6, 3))
+    U = rng.standard_normal((6, 3))
 
-    fixed = BaseCASSolver._fix_orbital_signs(C)
-    for j in range(C.shape[1]):
-        i_max = np.argmax(np.abs(fixed[:, j]))
-        assert fixed[i_max, j] > 0, "largest entry must be positive after fix"
+    Vf, Uf = BaseCASSolver._fix_orbital_phases(V, U)
+    for j in range(V.shape[1]):
+        assert Vf[np.argmax(np.abs(Vf[:, j])), j] > 0
 
-    # idempotent + sign-invariant
-    assert np.allclose(fixed, BaseCASSolver._fix_orbital_signs(fixed))
-    assert np.allclose(fixed, BaseCASSolver._fix_orbital_signs(-C))
+    # idempotent; flipping a pair together leaves the result unchanged
+    Vf2, Uf2 = BaseCASSolver._fix_orbital_phases(Vf, Uf)
+    assert np.allclose(Vf, Vf2) and np.allclose(Uf, Uf2)
+    Vf3, Uf3 = BaseCASSolver._fix_orbital_phases(-V, -U)
+    assert np.allclose(Vf, Vf3) and np.allclose(Uf, Uf3)
+
+
+def test_fix_orbital_phases_preserves_reconstruction():
+    """After the phase fix, U diag(sqrt(lam)) V^H must still rebuild T."""
+    rng = np.random.default_rng(3)
+    T = rng.standard_normal((5, 5))
+    lam, V, U = BaseCASSolver._ntos_from_tdm1_cas(T)
+    Vf, Uf = BaseCASSolver._fix_orbital_phases(V, U)
+    assert np.allclose(Uf @ np.diag(np.sqrt(lam)) @ Vf.conj().T, T, atol=1e-10)
 
 
 def test_numerical_zero_pairs_are_dropped():

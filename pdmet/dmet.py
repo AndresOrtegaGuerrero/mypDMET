@@ -379,6 +379,7 @@ class pDMET:
         total = lam.sum()
         n_total = len(lam)
         print(f"\nNTOs for state {state}  (top {n_kept} of {n_total} nonzero pairs)")
+        print("  [spin-traced: single excitation lam~2, ground NOs lam~n^2]")
         print("  pair       lambda      % of sum(lambda)")
         for i in range(n_kept):
             pct = lam[i] / total * 100 if total > 0 else 0.0
