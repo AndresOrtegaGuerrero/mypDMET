@@ -73,58 +73,31 @@ class BaseSolver:
         return lib.einsum("Lij,Lkl->ijkl", self.B, self.B, optimize=True)
 
     def _ensure_eri(self, mf=None):
-        """Ensure ``mf._eri`` contains the embedding ERIs.
-
-        Some PySCF routines (e.g. FCI and NEVPT2) access ``mf._eri``
-        directly. If missing, they may evaluate ``int2e`` on the dummy
-        embedding molecule instead. This helper reconstructs the embedding
-        ERIs from the DF 3-center tensor ``B`` and stores them in PySCF's
-        packed format.
-
-        The ERIs are built directly in packed form, avoiding a dense
-        ``nemb^4`` intermediate. If ``mf._eri`` is already populated,
-        no work is performed.
-
-        Parameters
-        ----------
-        mf : pyscf mean-field, optional
-            Mean-field object receiving ``_eri``. Defaults to ``self.mf``.
-        """
+        """Populate ``mf._eri`` with embedding ERIs from the DF tensor ``B``."""
         from pyscf import ao2mo
 
         if mf is None:
             mf = self.mf
 
-        if (
-            getattr(mf, "_eri", None) is not None
-            and getattr(mf._eri, "dtype", None) == np.float64
-        ):
-            return  # already populated
+        if getattr(mf, "_eri", None) is not None:
+            return
 
-        # Pack AO pairs once, then build:
-        # (ij|kl) = B_sym.T @ B_sym in 4-fold packed form.
-        # restore(8) converts it to PySCF's packed _eri format.
-        B_sym = lib.pack_tril(np.asarray(self.B))  # (naux, npair)
-        eri_s4 = lib.dot(B_sym.T, B_sym)  # (npair, npair)
+        # (ij|kl) = sum_Q B[Q,ij] B[Q,kl]
+        B_sym = lib.pack_tril(np.asarray(self.B))
+        eri_s4 = lib.dot(B_sym.T, B_sym)
         mf._eri = ao2mo.restore(8, eri_s4, self.Norb)
 
     def _setup_mf(self):
-        """Inject the embedding Hamiltonian and run the SCF using density fitting.
-
-        Instead of rebuilding the full 4-index ERIs and assigning them to ``mf._eri``,
-        we create a DF mean-field object and pass the precomputed embedding 3-center
-        tensor ``B`` through ``mf.with_df._cderi`` (stored in lower-triangular packed
-        form).
-        """
+        """Build the embedding mean-field object and optionally run SCF."""
         from pyscf import scf
 
         self.mol.nelectron = self.Nel
-        # pyscf computes nalpha = (Nel + spin)//2: a parity mismatch would
-        # silently change 2S (or lose an electron). Fail loudly instead.
-        assert (self.Nel - self.mol.spin) % 2 == 0, (
-            f"Nelec_in_emb={self.Nel} incompatible with twoS={self.mol.spin}; "
-            "check bath truncation / num_bath."
-        )
+
+        if (self.Nel - self.mol.spin) % 2:
+            raise ValueError(
+                f"Nelec_in_emb={self.Nel} incompatible with twoS={self.mol.spin}; "
+                "check bath truncation / num_bath."
+            )
         base = (
             scf.ROHF(self.mol)
             if (self.mol.spin or self.is_KROHF)
@@ -136,8 +109,7 @@ class BaseSolver:
         self.mf.get_hcore = lambda *args: h_emb
         self.mf.get_ovlp = lambda *args: s_emb
 
-        # Inject embedding DF tensor as the 3-center _cderi
-        # Shape convention: (naux, nemb*(nemb+1)/2) — lower-triangular packed
+        # Inject embedding DF tensor in PySCF's packed pair format.
         naux, nemb, _ = self.B.shape
         # pack_tril silently discards any antisymmetric part of B
         assert abs(self.B - self.B.transpose(0, 2, 1)).max() < 1e-10, (
@@ -156,16 +128,11 @@ class BaseSolver:
                     f"(Brillouin's theorem). Set run_emb_scf=True for this "
                     f"solver -- was it changed after initialize()?"
                 )
-            # CAS-DMET container mode: no SCF. The mean-field object only stores
-            # embedding integrals and orbitals; CAS/DMRG and NEVPT2 handle the
-            # electronic structure. SCF is skipped to preserve the embedding orbitals."""
             self._setup_mf_container()
             return
 
         self.mf.scf(self.DMguess)
         if not self.mf.converged:
-            # newton() returns a *copy* (its kernel writes results onto that
-            # copy, never back onto self.mf) -- capture and copy back by hand.
             mf2 = self.mf.newton()
             mf2.kernel(mo_coeff=self.mf.mo_coeff, mo_occ=self.mf.mo_occ)
             self.mf.mo_coeff, self.mf.mo_occ = mf2.mo_coeff, mf2.mo_occ
@@ -175,45 +142,42 @@ class BaseSolver:
             raise RuntimeError("Embedded HF/ROHF did not converge (SCF + Newton).")
 
     def _setup_mf_container(self):
-        """Populate the mf as a pure container (run_emb_scf=False).
+        """Populate ``mf`` with embedding orbitals without running SCF."""
 
-        Orbitals (settings.emb_orbitals):
-          "embedding" -- identity: the impurity+bath orbitals AS CONSTRUCTED.
-                         molist indices == embedding orbital indices.
-          "natural"   -- natural orbitals of the embedding guess density:
-                         the same space (a rotation-free re-sort would not
-                         change any physics the CAS can express), ordered by
-                         occupation so CASSCF's positional core window is
-                         automatically sensible.
-
-        mo_occ is the ideal ROHF pattern (nb doubles, 2S singles) on the
-        chosen ordering; mo_energy = diag(C^T FOCK C) for diagnostics only.
-        mf.e_tot is the energy OF THE GUESS OCCUPATION -- bookkeeping only;
-        the physical energy comes from the CAS solver (+NEVPT2).
-        """
         nb = (self.Nel - self.mol.spin) // 2
         na = self.Nel - nb
+        # Ideal ROHF occupations used by CASSCF for the positional
+        # core / active / virtual partition.
         mo_occ = np.zeros(self.Norb)
         mo_occ[:nb] = 2
         mo_occ[nb:na] = 1
 
-        # DMguess is spin-resolved (2, Norb, Norb) for the ROHF embedding;
-        # occupation analysis wants the spin-SUMMED density (0..2 scale).
-        dm_tot = np.asarray(self.DMguess)
-        if dm_tot.ndim == 3:
-            dm_tot = dm_tot[0] + dm_tot[1]
+        # DMguess may be spin-resolved; diagnostics use the spin-summed density.
+        dm = np.asarray(self.DMguess)
+        if dm.ndim == 3:
+            dm_tot = dm[0] + dm[1]
+        elif dm.ndim == 2:
+            dm_tot = dm
+        else:
+            raise ValueError(f"Unexpected DMguess shape: {dm.shape}")
 
         if self.settings.emb_orbitals == "natural":
-            n_occ, C = np.linalg.eigh(dm_tot)
-            order = np.argsort(n_occ)[::-1]
+            # Natural orbitals of the Schmidt embedding density.
+            occ, C = np.linalg.eigh(dm_tot)
+            order = np.argsort(occ)[::-1]
             C = np.ascontiguousarray(C[:, order])
-            n_diag = n_occ[order]
+            orb_occ = occ[order]
+
+            # Fix the gauge within degenerate natural-orbital subspaces.
+            C = self._canon_degenerate(C, orb_occ)
         else:  # "embedding"
+            # Preserve the Schmidt impurity+bath orbitals exactly.
             C = np.eye(self.Norb)
-            n_diag = np.diag(dm_tot).copy()
+            orb_occ = np.diag(dm_tot).copy()
+
             # CASSCF's core window is positional: warn when the first nb raw
             # embedding orbitals do not actually carry the occupied density.
-            core_charge = float(n_diag[:nb].sum())
+            core_charge = float(orb_occ[:nb].sum())
             if abs(core_charge - 2.0 * nb) > 0.5:
                 print(
                     f"  WARNING(container): first {nb} embedding orbitals "
@@ -225,19 +189,20 @@ class BaseSolver:
 
         self.mf.mo_coeff = C
         self.mf.mo_occ = mo_occ
-        self.mf.mo_energy = lib.einsum("pi,pq,qi->i", C, self.FOCK, C)
-        # bookkeeping energy of the TRUE embedding-projected low-level density
+        self.mf.mo_energy = lib.einsum("pi,pq,qi->i", C.conj(), self.FOCK, C)
+
+        # Bookkeeping energy of the embedding low-level density.
         self.mf.e_tot = self.mf.energy_tot(dm=self.DMguess)
-        self.mf.converged = True  # container: no SCF by design
+        self.mf.converged = True  # container only; no SCF was run
 
         print(
             f"  [container] embedded SCF skipped -- mf holds integrals + "
             f"{self.settings.emb_orbitals} orbitals; "
             f"E(low-level, embedding) = {self.mf.e_tot:.10f}"
         )
-        self._print_container_occupations(n_diag, nb, na)
+        self._print_container_occupations(orb_occ, nb, na)
         if self.settings.emb_orbitals == "natural":
-            self._print_container_composition(C, n_diag)
+            self._print_container_composition(C, orb_occ)
 
     def _print_container_occupations(self, n, nb, na):
         """Guess occupations at the closed|open and open|virtual boundaries."""
@@ -254,6 +219,19 @@ class BaseSolver:
             print("  [container] WARNING: open|virtual gap < 0.5 -- ambiguous")
         nfrac = int(((n > 0.05) & (n < 1.95)).sum())
         print(f"  [container] fractional occupations (0.05 < n < 1.95): {nfrac}")
+
+    def _canon_degenerate(self, C, n, tol=1e-6):
+        """Diagonalize FOCK within each n-degenerate NO block (gauge fix)."""
+        i = 0
+        while i < n.size:
+            j = i + 1
+            while j < n.size and abs(n[j] - n[i]) < tol:
+                j += 1
+            if j - i > 1:
+                _, U = np.linalg.eigh(C[:, i:j].conj().T @ self.FOCK @ C[:, i:j])
+                C[:, i:j] = C[:, i:j] @ U
+            i = j
+        return C
 
     def _lo_view(self, C):
         """(C_lo, labels, impurity LO rows) from lo_view, or None."""
@@ -272,12 +250,9 @@ class BaseSolver:
             return None
 
     def _print_container_composition(self, C, n, max_rows=200):
-        """NO composition vs the impurity block -- for picking molist indices."""
+        """Print natural-orbital composition to help choose ``molist``."""
         w = np.abs(C) ** 2
         w_imp = w[: self.Nimp, :].sum(axis=0)
-        sel = np.where(((n > 0.02) & (n < 1.98)) | (w_imp > 0.5))[0]
-        if sel.size == 0:
-            return
 
         lo = self._lo_view(C)
         if lo is not None:
@@ -291,10 +266,22 @@ class BaseSolver:
                 p = labels[r].split()
                 sh = re.match(r"\d+[a-z]", p[2]).group(0)  # "3dxy" -> "3d"
                 shell_rows.setdefault(f"{p[1]}{sh}", []).append(int(r))
+            # also rescue core/virtual NOs hybridized onto any impurity shell
+            w_shell = np.array(
+                [
+                    max(W[rows, i].sum() for rows in shell_rows.values())
+                    for i in range(self.Norb)
+                ]
+            )
+            sel = np.where(((n > 0.02) & (n < 1.98)) | (w_imp > 0.3) | (w_shell > 0.2))[
+                0
+            ]
+            if sel.size == 0:
+                return
             print(
                 "  [container] NO composition in the IAO+PAO basis "
-                "(fractional or imp-weight > 0.5) -- molist uses these NO "
-                "indices (0-based):"
+                "(fractional, imp-weight > 0.3 or shell-weight > 0.2) -- "
+                "molist uses these NO indices (0-based):"
             )
             print(
                 "      NO       n   w_imp "
@@ -317,8 +304,11 @@ class BaseSolver:
                 print(f"   {i:6d}  {n[i]:6.3f}  {w_imp[i]:5.2f} {cols}   {comp}")
             return
 
+        sel = np.where(((n > 0.02) & (n < 1.98)) | (w_imp > 0.3))[0]
+        if sel.size == 0:
+            return
         print(
-            "  [container] NO composition (fractional or imp-weight > 0.5) "
+            "  [container] NO composition (fractional or imp-weight > 0.3) "
             "-- molist uses these NO indices (0-based):"
         )
         print("      NO       n   w_imp   top embedding components (* = impurity)")
