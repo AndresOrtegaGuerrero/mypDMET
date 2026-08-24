@@ -11,34 +11,66 @@ class BaseCASSolver(BaseSolver):
         # NTO outputs (populated by _compute_ntos on any multi-root path).
         self.t_dm1s = None
         self.ntos_per_root = None
+        # NDOS outputs
+        self.d_dm1s = None
+        self.ndos_per_root = None
 
-    def _wants_ntos(self):
-        """True if NTOs should be computed (settings.nto, or any NEVPT2 run)."""
-        return bool(self.settings.nto) or (self.settings.nevpt2_roots is not None)
+    def _analyze_states(self, mc, fcivec, roots, allow_nto=True):
+        """Entry point for excited-states analysis (NTOs/NDOs)"""
 
-    def _reset_ntos(self):
+        if self.settings.nto and allow_nto:
+            self._compute_ntos(mc, fcivec, roots)
+        if self.settings.ndo:
+            self._compute_ndos(mc, fcivec, roots)
+
+    def _reset_analysis(self):
         """Clear NTO buffers at kernel start (avoid accumulation across DMET iters)."""
         self.t_dm1s = None
         self.ntos_per_root = None
+        self.d_dm1s = None
+        self.ndos_per_root = None
 
-    def _compute_ntos(self, mc, fcivec, roots, cas_norb):
-        """Transition densities + NTOs for ground -> each root, accumulated onto
-        self.t_dm1s / self.ntos_per_root (POSITIONAL: entry i = i-th computed
-        root; equals root i only when roots == range(n), single spin block).
-
-        Independent of NEVPT2. MUST run on the PRISTINE wavefunction, before any
-        mrpt.NEVPT(...).kernel() canonicalizes mc in place (that would corrupt the
-        cross-root transition densities).
-        """
+    def _compute_root_quantities(self, mc, fcivec, roots, compute, dm1_attr, info_attr):
+        """Compute and accumulate root-dependent density quantities."""
         if not isinstance(fcivec, (list, tuple)):
             fcivec = [fcivec]
-        if self.t_dm1s is None:
-            self.t_dm1s, self.ntos_per_root = [], []
+
+        dm1s = getattr(self, dm1_attr)
+        infos = getattr(self, info_attr)
+
+        if dm1s is None:
+            dm1s, infos = [], []
+            setattr(self, dm1_attr, dm1s)
+            setattr(self, info_attr, infos)
+
         for root in roots:
-            t_dm1_emb, nto_info = self._transition_dm1(mc, fcivec, root, cas_norb)
-            self.t_dm1s.append(t_dm1_emb)
-            self.ntos_per_root.append(nto_info)
-        return self.t_dm1s, self.ntos_per_root
+            dm1, info = compute(mc, fcivec, root)
+            dm1s.append(dm1)
+            infos.append(info)
+
+        return dm1s, infos
+
+    def _compute_ntos(self, mc, fcivec, roots):
+        """Compute transition densities and NTOs."""
+        return self._compute_root_quantities(
+            mc,
+            fcivec,
+            roots,
+            self._transition_dm1,
+            "t_dm1s",
+            "ntos_per_root",
+        )
+
+    def _compute_ndos(self, mc, fcivec, roots):
+        """Compute difference densities and NDOs."""
+        return self._compute_root_quantities(
+            mc,
+            fcivec,
+            roots,
+            self._difference_dm1,
+            "d_dm1s",
+            "ndos_per_root",
+        )
 
     def _mo_guess(self, mc):
         """Initial-guess MOs for CASCI/CASSCF, in priority order:
@@ -443,17 +475,116 @@ class BaseCASSolver(BaseSolver):
         return e_casci_nevpt2
 
     @staticmethod
-    def _ntos_from_tdm1_cas(t_dm1_cas, thresh=1e-12):
-        """SVD T = U diag(s) Vh of the (generally non-Hermitian) CAS transition
-        density. Returns (lambdas = s**2 sorted desc, V_hole, U_part), each in
-        the CAS-MO basis; pairs with lambda <= thresh are dropped as noise.
-        V_hole (= columns of V) are the donors/holes, U_part the acceptors.
+    def _decompose_nto_cas(t_dm1_cas, thresh=1e-12):
+        """SVD of a CAS transition density.
+
+        Returns
+        -------
+        lambdas : ndarray
+            NTO weights, s**2.
+        V_hole : ndarray
+            Hole/donor NTOs in the CAS basis.
+        U_part : ndarray
+            Particle/acceptor NTOs in the CAS basis.
         """
         U, s, Vh = np.linalg.svd(t_dm1_cas)
         lam = s**2
         keep = lam > thresh
-        # numpy returns Vh (= V^dagger); hole orbitals are its rows back as cols.
+
         return lam[keep], Vh[keep].conj().T, U[:, keep]
+
+    @staticmethod
+    def _decompose_ndo_cas(d_dm1_cas, thresh=1e-12):
+        """
+        Eigendecompose Delta = D^II - D^00 (symmetric). Returns kappa sorted by
+        |kappa| desc, W columns, and the scalar descriptors. (J. Chem. Phys. 141, 024106 (2014), Eq 72-76)
+        """
+        kappa, W = np.linalg.eigh(d_dm1_cas)
+
+        order = np.argsort(-np.abs(kappa))
+        kappa, W = kappa[order], W[:, order]
+        keep = np.abs(kappa) > thresh
+        kappa, W = kappa[keep], W[:, keep]
+        d, a = np.minimum(kappa, 0), np.maximum(kappa, 0)
+
+        D_det, D_att = (W * d) @ W.T, (W * a) @ W.T  # Eqs. 71, 73  (= W diag(.) W^T)
+        assert np.allclose(
+            D_det + D_att, d_dm1_cas
+        )  # d + a = kappa ⇒ split exact (to thresh)
+        stats = {
+            "p_D": d.sum(),
+            "p_A": a.sum(),
+            "PR_D": d.sum() ** 2 / (d @ d) if np.any(d) else 0.0,
+            "PR_A": a.sum() ** 2 / (a @ a) if np.any(a) else 0.0,
+        }
+        return kappa, W, D_det, D_att, stats
+
+    def _build_nto(self, mc_ci, t_dm1_cas):
+        """Transition 1-RDM (ground -> root) + NTOs. SVD in the CAS basis (where
+        the rank is exact), then promote the vectors to the embedding (EO) basis
+        via orbcas (lambdas are invariant under that isometry).
+
+        Returns (t_dm1_emb, nto_info), nto_info = {'lambdas', 'V_hole', 'U_part'}
+        with the orbitals in the (Norb) EO basis.
+        """
+        lam, V_cas, U_cas = self._decompose_nto_cas(t_dm1_cas)
+
+        orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
+        t_dm1_emb = orbcas @ t_dm1_cas @ orbcas.T
+
+        V_eo, U_eo = self._fix_orbital_phases(orbcas @ V_cas, orbcas @ U_cas)
+        info = {"lambdas": lam, "V_hole": V_eo, "U_part": U_eo}
+        return t_dm1_emb, info
+
+    def _build_ndo(self, mc_ci, d_dm1_cas):
+        """Build EO difference density and EO NDOs from a CAS density."""
+
+        # NDOs decomposition
+        kappa, W_cas, D_det, D_att, stats = self._decompose_ndo_cas(d_dm1_cas)
+        # CAS orbs in EO basis
+        orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
+
+        # CAS -> EO
+        def to_eo(M):
+            return orbcas @ M @ orbcas.T
+
+        # NDO in EO basis
+        W_eo = orbcas @ W_cas
+
+        if W_eo.shape[1]:
+            idx = np.abs(W_eo).argmax(axis=0)
+            phase = np.sign(W_eo[idx, np.arange(W_eo.shape[1])])
+            W_eo *= phase
+
+        info = {
+            "kappa": kappa,
+            "W": W_eo,
+            "D_det": to_eo(D_det),
+            "D_att": to_eo(D_att),
+            **stats,
+        }
+        return to_eo(d_dm1_cas), info
+
+    def _transition_dm1(self, mc_ci, fcivec, root):
+        """Get a PySCF CAS transition density and build its NTOs."""
+        t_dm1_cas = mc_ci.fcisolver.trans_rdm1(
+            fcivec[0], fcivec[root], mc_ci.ncas, mc_ci.nelecas
+        )
+
+        return self._build_nto(mc_ci, t_dm1_cas)
+
+    def _difference_dm1(self, mc_ci, fcivec, root):
+        """Get PySCF CAS state densities and build their NDOs."""
+        from pyscf.fci import direct_spin1
+
+        nelecas = self._nelecas_per_state(len(fcivec))
+
+        def rdm1(r):
+            return direct_spin1.make_rdm1(fcivec[r], mc_ci.ncas, nelecas[r])
+
+        return self._build_ndo(mc_ci, rdm1(root) - rdm1(0))
+
+        # return self._build_ndo(mc_ci, dm1_I - dm1_0)
 
     @staticmethod
     def _fix_orbital_phases(V, U):
@@ -468,27 +599,6 @@ class BaseCASSolver(BaseSolver):
                 V[:, j] *= phase
                 U[:, j] *= phase
         return V, U
-
-    def _transition_dm1(self, mc_ci, fcivec, root, cas_norb):
-        """Transition 1-RDM (ground -> root) + NTOs. SVD in the CAS basis (where
-        the rank is exact), then promote the vectors to the embedding (EO) basis
-        via orbcas (lambdas are invariant under that isometry).
-
-        Returns (t_dm1_emb, nto_info), nto_info = {'lambdas', 'V_hole', 'U_part'}
-        with the orbitals in the (Norb) EO basis.
-        """
-        t_dm1_cas = mc_ci.fcisolver.trans_rdm1(
-            fcivec[0], fcivec[root], mc_ci.ncas, mc_ci.nelecas
-        )
-        # pyscf's trans_rdm1(ground, root) is already |particle><hole| (Martin
-        # orientation), so a direct SVD gives V_hole = donor, U_part = acceptor.
-        lam, V_cas, U_cas = self._ntos_from_tdm1_cas(t_dm1_cas)
-
-        orbcas = mc_ci.mo_coeff[:, mc_ci.ncore : mc_ci.ncore + mc_ci.ncas]
-        t_dm1_emb = orbcas @ t_dm1_cas @ orbcas.T
-        V_emb, U_emb = self._fix_orbital_phases(orbcas @ V_cas, orbcas @ U_cas)
-        nto_info = {"lambdas": lam, "V_hole": V_emb, "U_part": U_emb}
-        return t_dm1_emb, nto_info
 
     def _nelecas_per_state(self, n_states):
         """

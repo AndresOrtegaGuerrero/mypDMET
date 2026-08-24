@@ -268,8 +268,60 @@ class EmbeddingSettings:
 
 @dataclass
 class SolverSettings:
-    """
-    Setting for the impurity solver (QCSolver)
+    """Settings for the impurity solver (``QCSolver``).
+
+    Attributes:
+        name: Mean-field/correlated method to run.
+        twoS: Spin multiplicity as 2S. ``None`` lets the solver decide.
+        nroots: Number of states to solve for.
+        state_percent: Per-root weights used when reporting state-resolved
+            quantities.
+        e_shift: Energy shift applied to the Hamiltonian (level shift).
+        cas: Active space as ``(n_orb, n_ele)``.
+        molist: 1-based orbital indices defining the active space.
+        mo_restart: Orbitals used to restart CASSCF / DMRG-SCF.
+        state_specific_: Root index for state-specific optimisation.
+        state_average_: Root weights for state-averaged optimisation,
+            e.g. ``[0.5, 0.5]``.
+        state_average_mix_: ``StateConfig`` objects (or equivalent dicts)
+            describing roots of different symmetry/spin to mix in
+            state-average CASSCF.
+        nevpt2_roots: Roots on which to run NEVPT2.
+        nevpt2_nroots: Number of roots in the NEVPT2 reference.
+        nevpt2_spin: Spin (2S) of the NEVPT2 reference.
+        nto: Compute natural transition orbitals (NTOs) from the multi-root
+            transition densities.
+        nto_export: Also write NTO cube files at the end of ``one_shot()`` /
+            ``run()``.
+        nto_npairs: Number of top (donor, acceptor) pairs kept per root.
+        nto_lambda_floor: Pairs with weight below this are skipped even if
+            requested by ``nto_npairs``.
+        ndo: Compute natural difference orbitals (NDOs) from the multi-root
+            difference densities.
+        ndo_export: Also write NDO cube files at the end of ``one_shot()`` / ``run()``.
+        ndo_npairs: Number of top (donor, acceptor) pairs kept per root.
+        ndo_kappa_floor: Pairs with weight below this are skipped even if requested
+        ci_max_det: Dominant determinants printed per CI state.
+        ci_print_tol: Minimum ``|coeff|`` for a determinant to be printed.
+        run_emb_scf: If ``False``, run in *container mode*: the embedded
+            HF/ROHF is skipped, the ``mf`` object only carries integrals and
+            orbitals, and the CAS/DMRG solver does all the solving (NEVPT2
+            then corrects the low-level KROHF energy).
+        emb_orbitals: Orbitals stored in the container (container mode only).
+
+            * ``"embedding"`` -- impurity+bath orbitals as constructed
+              (identity transform), so ``molist`` indices are embedding
+              orbital indices. CASSCF's core window is positional, so
+              sort the active space via ``molist``.
+            * ``"natural"`` -- natural orbitals of the embedding guess
+              density: same space, occupation-sorted, giving a sane core
+              window.
+        verbose: Verbosity level.
+        max_memory: Memory budget for the impurity solver, in MB.
+        cas_solver: Solver used inside the active space.
+        otxc: On-top functional for CAS-PDFT. Only ``"tPBE"`` is tested;
+            generalising to ``"ftPBE"`` / ``"tPBE0"`` is an open TODO.
+        dmrg: DMRG-specific settings.
     """
 
     name: Solver = Solver.HF
@@ -277,42 +329,41 @@ class SolverSettings:
     nroots: int = 1
     state_percent: Optional[list] = None
     e_shift: Optional[float] = None
-    cas: Optional[tuple] = None  # (n_orb, n_ele)
-    molist: Optional[list] = None  # list of 1-based orbital indices for active space
-    mo_restart: Optional[object] = None  # Restart orbitals for CASSCF/DMRG-SCF
+    cas: Optional[tuple] = None
+    molist: Optional[list] = None
+    mo_restart: Optional[object] = None
     state_specific_: Optional[int] = 0
-    state_average_: Optional[list] = None  # field(default_factory=lambda: [0.5, 0.5])
-    state_average_mix_: Optional[List[Union[StateConfig, dict]]] = (
-        None  # list of (root1, root2) pairs to mix in state-average CASSCF
-    )
-    nevpt2_roots: Optional[list] = None  # field(default_factory=list)
-    nevpt2_nroots: Optional[int] = None  # int = 10
+    state_average_: Optional[list] = None
+    state_average_mix_: Optional[List[Union[StateConfig, dict]]] = None
+    nevpt2_roots: Optional[list] = None
+    nevpt2_nroots: Optional[int] = None
     nevpt2_spin: Optional[int] = None
-    nto: bool = False  # compute NTOs from the multi-root transition densities
-    nto_export: bool = False  # also write NTO cubes at the end of one_shot()/run()?
-    nto_npairs: int = 2  # how many top (donor, acceptor) pairs per root
-    nto_lambda_floor: float = 1e-3  # skip pairs below this weight even if asked
-    ci_max_det: int = 8  # dominant determinants printed per CI state
-    ci_print_tol: float = 0.1  # |coeff| threshold for the printed determinant table
-    # CAS-DMET container mode: skip the embedded HF/ROHF entirely -- the mf
-    # object only holds integrals + orbitals, and the CAS/DMRG solver does
-    # ALL the solving (NEVPT2 corrects the energy from the KROHF low level).
-    run_emb_scf: bool = True  # False = container mode (CAS/DMRG/FCI only)
-    # Which orbitals the container holds (only used when run_emb_scf=False):
-    #   "embedding" -> the impurity+bath orbitals AS CONSTRUCTED (identity);
-    #                  molist indices == embedding orbital indices. NOTE:
-    #                  CASSCF's core window is positional -- sort the active
-    #                  space with molist.
-    #   "natural"   -> natural orbitals of the embedding guess density
-    #                  (same space, occupation-sorted -> sane core window).
+
+    # --- Natural transition orbitals ---
+    nto: bool = False
+    nto_export: bool = False
+    nto_npairs: int = 2
+    nto_lambda_floor: float = 1e-3
+
+    # --- Natural Difference Orbitals ---
+    ndo: bool = False
+    ndo_export: bool = False
+    ndo_npairs: int = 2
+    ndo_kappa_floor: float = 1e-3
+
+    # --- CI printing ---
+    ci_max_det: int = 8
+    ci_print_tol: float = 0.1
+
+    # --- Container (CAS-DMET) mode ---
+    run_emb_scf: bool = True
     emb_orbitals: str = "embedding"
+
     verbose: int = 0
-    max_memory: int = 4000  # For impurity solver in MB
+    max_memory: int = 4000
     cas_solver: CASType = CASType.FCI
-    otxc: str = (
-        "tPBE"  # To use for CASPDFT (Check if we can generalize to use ftPBE and tPBE0)
-    )
-    dmrg: Optional[DMRGSettings] = None  # DMRG-specific settings
+    otxc: str = "tPBE"
+    dmrg: Optional[DMRGSettings] = None
 
     def validate(self):
         if self.name == Solver.RCCSD and self.twoS != 0:
@@ -338,23 +389,22 @@ class SolverSettings:
                 self.nevpt2_spin = self.twoS
 
         if self.nto or self.nto_export:
-            # NTOs need a multi-root wavefunction (ground + >=1 excited root);
-            # NEVPT2 is not required.
-            multi_root = (
-                self.nevpt2_roots is not None
-                or self.nroots > 1
-                or self.state_average_ is not None
-                or self.state_average_mix_ is not None
-            )
-            if not multi_root:
-                raise ValueError(
-                    "nto/nto_export require a multi-root calculation (set "
-                    "nevpt2_roots, nroots>1, state_average_, or state_average_mix_)."
-                )
+            self._require_multi_root("nto/nto_export")
+
             if self.nto_npairs < 1:
                 raise ValueError("nto_npairs must be >= 1.")
+
             if self.nto_lambda_floor < 0:
                 raise ValueError("nto_lambda_floor must be non-negative.")
+
+        if self.ndo or self.ndo_export:
+            self._require_multi_root("ndo/ndo_export")
+
+            if self.ndo_npairs < 1:
+                raise ValueError("ndo_npairs must be >= 1.")
+
+            if self.ndo_kappa_floor < 0:
+                raise ValueError("ndo_kappa_floor must be non-negative.")
 
         if self.ci_max_det < 1:
             raise ValueError("ci_max_det must be >= 1.")
@@ -445,6 +495,22 @@ class SolverSettings:
 
             assert len(self.state_average_mix_) > 1, (
                 "There should be at least two states to mix in state_average_mix_"
+            )
+
+    def _require_multi_root(self, feature):
+        """Require a calculation containing ground and excited states."""
+        multi_root = (
+            self.nevpt2_roots is not None
+            or self.nroots > 1
+            or self.state_average_ is not None
+            or self.state_average_mix_ is not None
+        )
+
+        if not multi_root:
+            raise ValueError(
+                f"{feature} requires a multi-root calculation "
+                "(set nevpt2_roots, nroots>1, state_average_, "
+                "or state_average_mix_)."
             )
 
     def to_qcsolver_kwargs(self, is_KROHF):
