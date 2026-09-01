@@ -98,20 +98,47 @@ def rotate_mat_ndo(pdmet, state=0, n_orbs=None):
     return _eo_to_lo(pdmet) @ info["W"][:, :n_kept]
 
 
-def _print_nto_table(state, lam, n_kept, floor):
-    """ORCA-style NTO summary table for one state."""
+def _cas_weights(vec_cas, top=3, tol=0.05):
+    w = np.abs(vec_cas) ** 2
+    tot = w.sum()
+    if tot == 0.0:
+        return "--"
+    w = w / tot
+    idx = np.argsort(-w)[:top]
+    parts = [f"{w[i]:.2f} cas_{i:02d}" for i in idx if w[i] >= tol]
+    return " + ".join(parts) if parts else "(delocalized)"
+
+
+def _print_nto_table(state, info, n_kept, floor):
+    lam = info["lambdas"]
     total = lam.sum()
     n_total = len(lam)
+
+    if state == 0:
+        print(
+            "\nState 0 = ground density (T^00 = gamma_0), so lambda_i = n_i^2. "
+            "Not a transition."
+        )
+
     print(f"\nNTOs for state {state}  (top {n_kept} of {n_total} nonzero pairs)")
-    print("  [spin-traced: single excitation lam~2, ground NOs lam~n^2]")
-    print("  pair       lambda      % of sum(lambda)")
+    print(f"  sum(lambda) = {total:.4f}   [~2 = clean single excitation]")
+    print("  pair       lambda     % of transition")
     for i in range(n_kept):
         pct = lam[i] / total * 100 if total > 0 else 0.0
-        print(f"  {i:3d}     {lam[i]:10.5f}      {pct:6.2f}%")
+        print(f"  {i:3d}     {lam[i]:10.5f}     {pct:6.2f}%")
+        if info.get("V_hole_cas") is not None:
+            print(f"            hole: {_cas_weights(info['V_hole_cas'][:, i])}")
+            print(f"            part: {_cas_weights(info['U_part_cas'][:, i])}")
+
+    if n_kept > 1 and abs(lam[0] - lam[1]) < 0.05 * abs(lam[0]):
+        print(
+            "  [near-degenerate lambdas: pairs defined only up to a rotation in "
+            "that subspace]"
+        )
     if n_kept < n_total:
         print(
-            f"  ...     (skipped {n_total - n_kept} pairs below "
-            f"floor={floor:.1e} or beyond n_pairs)"
+            f"  ...     (skipped {n_total - n_kept} below floor={floor:.1e} or "
+            f"beyond n_pairs)"
         )
     if total > 0 and n_kept > 0:
         print(f"  sum(lambda) kept / all = {lam[:n_kept].sum() / total * 100:5.1f}%")
@@ -140,7 +167,7 @@ def get_ntos(
     lam = info["lambdas"]
     n_kept = min(n, int(np.sum(lam >= floor)))
 
-    _print_nto_table(state, lam, n_kept, floor)
+    _print_nto_table(state, info, n_kept, floor)
 
     if outdir is not None:
         _check_gamma(pdmet, "NTO")
@@ -171,15 +198,14 @@ def get_ntos(
 
 
 def _print_ndo_table(state, info, n_kept, floor):
-    """NDO summary table: signed kappa, role, and the promotion descriptors."""
     kappa = info["kappa"]
     n_total = len(kappa)
     pr_d = f"{info['PR_D']:.2f}" if info["PR_D"] else "--"
     pr_a = f"{info['PR_A']:.2f}" if info["PR_A"] else "--"
-    print(
-        f"\nNDOs for state {state}  (top {n_kept} of {n_total} nonzero)  "
-        f"p = {info['p_A']:.4f}  PR_D = {pr_d}  PR_A = {pr_a}"
-    )
+
+    print(f"\nNDOs for state {state}  (top {n_kept} of {n_total} nonzero)")
+    print(f"  p = {info['p_A']:.4f} electrons promoted  [~1 single, ~2 double]")
+    print(f"  PR_D = {pr_d}  PR_A = {pr_a}   [orbitals sharing each side]")
     print("  [kappa < 0: detachment (D);  kappa > 0: attachment (A)]")
     print("  orb        kappa      type    % of side")
     for i in range(n_kept):
@@ -188,6 +214,8 @@ def _print_ndo_table(state, info, n_kept, floor):
         side = abs(info["p_D"]) if k < 0 else info["p_A"]
         pct = abs(k) / side * 100 if side > 0 else 0.0
         print(f"  {i:3d}     {k:10.5f}      {role}      {pct:6.2f}%")
+        if info.get("W_cas") is not None:
+            print(f"            {_cas_weights(info['W_cas'][:, i])}")
     if n_kept < n_total:
         print(
             f"  ...     (skipped {n_total - n_kept} below floor={floor:.1e} "

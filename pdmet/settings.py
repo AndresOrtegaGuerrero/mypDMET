@@ -157,6 +157,8 @@ class StateConfig:
     spin: int
     roots: int
     weights: Union[float, List[float]]
+    nto: bool = False
+    ndo: bool = False
 
     def __post_init__(self):
         if isinstance(self.weights, float):
@@ -344,6 +346,7 @@ class SolverSettings:
     nto_export: bool = False
     nto_npairs: int = 2
     nto_lambda_floor: float = 1e-3
+    nto_source: str = "sa"  # "sa" = SA-CASSCF states | "casci" = NEVPT2 CASCI states
 
     # --- Natural Difference Orbitals ---
     ndo: bool = False
@@ -396,6 +399,12 @@ class SolverSettings:
 
             if self.nto_lambda_floor < 0:
                 raise ValueError("nto_lambda_floor must be non-negative.")
+
+            if self.nto_source not in ("sa", "casci"):
+                raise ValueError("nto_source must be 'sa' or 'casci'.")
+
+            if self.nto_source == "casci" and self.nevpt2_roots is None:
+                raise ValueError("nto_source='casci' requires nevpt2_roots.")
 
         if self.ndo or self.ndo_export:
             self._require_multi_root("ndo/ndo_export")

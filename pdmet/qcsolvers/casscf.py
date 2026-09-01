@@ -149,7 +149,7 @@ class CASSCFSolver(BaseCASSolver):
         e_cell = lib.einsum("i,i->", w, e_cells)
         self.SS = np.mean(ss)
 
-        if self.settings.nevpt2_roots is None:
+        if self.settings.nto_source == "sa":
             roots = list(range(len(fcivec)))
             same_sector = all(n == nelecas_list[0] for n in nelecas_list)
 
@@ -195,8 +195,8 @@ class CASSCFSolver(BaseCASSolver):
                     f"NEVPT2 CASCI block {i} (2S = {spin}) did not converge in "
                     f"{max_cycle} cycles; raise settings.nevpt2_ci_max_cycle."
                 )
-
-            self._analyze_states(mc_ci, fcivec, nevpt2_roots[i])
+            if self.settings.nto_source == "casci":
+                self._analyze_states(mc_ci, fcivec, nevpt2_roots[i])
 
             # Verify the spin sector: the penalty must actually have held.
             vecs = fcivec if isinstance(fcivec, (list, tuple)) else [fcivec]
@@ -238,7 +238,8 @@ class CASSCFSolver(BaseCASSolver):
 
         fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-        self._analyze_states(mc_ci, fcivec, nevpt2_roots)
+        if self.settings.nto_source == "casci":
+            self._analyze_states(mc_ci, fcivec, nevpt2_roots)
 
         e_casci_nevpt2 = self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots, cas_norb)
 

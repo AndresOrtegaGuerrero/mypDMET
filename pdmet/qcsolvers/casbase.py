@@ -533,7 +533,13 @@ class BaseCASSolver(BaseSolver):
         t_dm1_emb = orbcas @ t_dm1_cas @ orbcas.T
 
         V_eo, U_eo = self._fix_orbital_phases(orbcas @ V_cas, orbcas @ U_cas)
-        info = {"lambdas": lam, "V_hole": V_eo, "U_part": U_eo}
+        info = {
+            "lambdas": lam,
+            "V_hole": V_eo,
+            "U_part": U_eo,
+            "V_hole_cas": V_cas,
+            "U_part_cas": U_cas,
+        }
         return t_dm1_emb, info
 
     def _build_ndo(self, mc_ci, d_dm1_cas):
@@ -561,6 +567,7 @@ class BaseCASSolver(BaseSolver):
             "W": W_eo,
             "D_det": to_eo(D_det),
             "D_att": to_eo(D_att),
+            "W_cas": W_cas,
             **stats,
         }
         return to_eo(d_dm1_cas), info

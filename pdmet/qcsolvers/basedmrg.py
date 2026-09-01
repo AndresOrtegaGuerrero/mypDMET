@@ -94,9 +94,11 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
             solvers = []
             weight_list = []
             for i, solver in enumerate(state_average_mix_):
-                # Tne nto/ndo for mix solver might need to be reconsidered
+                nto_ndo = (
+                    solver.nto or self.settings.nto or solver.ndo or self.settings.ndo
+                )
                 dmrg_solver = self._get_dmrg_solver(
-                    solver.spin, solver.roots, index=i, nto_ndo=solver.nto or solver.ndo
+                    solver.spin, solver.roots, index=i, nto_ndo=nto_ndo
                 )
                 solvers.append(dmrg_solver)
                 weight_list += solver.weights
@@ -200,7 +202,11 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
             neleca = cas_nelec - nelecb
             mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
             mc_ci.fcisolver = self._get_dmrg_solver(
-                spin, nevpt2_nroots[i], path="casci", index=i
+                spin,
+                nevpt2_nroots[i],
+                path="casci",
+                index=i,
+                nto_ndo=self.settings.nto or self.settings.ndo,
             )
 
             mc_ci.fcisolver.nroots = nevpt2_nroots[i]
@@ -244,7 +250,12 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
         nelecb = (cas_nelec - spin) // 2
         neleca = cas_nelec - nelecb
         mc_ci = mcscf.CASCI(self.mf, cas_norb, (neleca, nelecb))
-        mc_ci.fcisolver = self._get_dmrg_solver(spin, nevpt2_nroots, path="casci")
+        mc_ci.fcisolver = self._get_dmrg_solver(
+            spin,
+            nevpt2_nroots,
+            path="casci",
+            nto_ndo=self.settings.nto or self.settings.ndo,
+        )
 
         if self.settings.e_shift is not None:
             ss = 0.5 * spin * (0.5 * spin + 1)
