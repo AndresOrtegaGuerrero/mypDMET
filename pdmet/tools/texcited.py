@@ -299,11 +299,42 @@ def get_trans_dipole(pdmet):
         t_dm1_ao = ao2eo @ t_dm1_emb @ ao2eo.T.conj()
         dip = np.einsum("xij,ji->x", dip_ints, t_dm1_ao).real
         dipoles.append(dip)
+        if i == 0:
+            print(
+                "Ground-state electronic dipole (embedding only, no nuclei; "
+                "not a transition): {0:3.5f} {1:3.5f} {2:3.5f}".format(*dip)
+            )
+            continue
         print(
-            "Transition dipole between |0> and |{0:d}>: {1:3.5f} {2:3.5f} "
-            "{3:3.5f} | Norm: {4:3.5f}".format(i, *dip, np.linalg.norm(dip))
+            "Transition dipole <0|r|{0:d}>: {1:3.5f} {2:3.5f} {3:3.5f} "
+            "| Norm: {4:3.5f}".format(i, *dip, np.linalg.norm(dip))
         )
     return dipoles
+
+
+def get_oscillator_strengths(pdmet, energies=None):
+    """f_n = (2/3) dE |mu_0n|^2 in a.u. (Eq. 46, JCP 150, 174121).
+
+    energies defaults to mc.e_states; pass the NEVPT2 totals to get f at that
+    level. Returns [(dE, |mu|, f)] indexed by state; entry 0 is a placeholder.
+    """
+    if energies is None:
+        energies = getattr(pdmet.qcsolver.mc, "e_states", None)
+    if energies is None:
+        raise ValueError("no energies: pass energies= or run a multi-root solver")
+
+    e = np.atleast_1d(np.asarray(energies, dtype=float))
+    dips = get_trans_dipole(pdmet)
+
+    rows = [(0.0, 0.0, 0.0)]
+    print("\n  state   dE (eV)     |mu| (au)      f_osc")
+    for i in range(1, min(len(dips), len(e))):
+        de = float(e[i] - e[0])
+        mu = float(np.linalg.norm(dips[i]))
+        f = 2.0 / 3.0 * de * mu**2
+        rows.append((de, mu, f))
+        print(f"  {i:3d}   {de * 27.211386245988:8.3f}   {mu:9.5f}   {f:10.6f}")
+    return rows
 
 
 def get_attach_detach_density(pdmet, state):

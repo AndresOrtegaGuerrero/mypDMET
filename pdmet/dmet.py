@@ -1804,6 +1804,9 @@ class pDMET:
     def get_attach_detach_density(self, state):
         return texcited.get_attach_detach_density(self, state)
 
+    def get_oscillator_strengths(self, *args, **kwargs):
+        return texcited.get_oscillator_strengths(self, *args, **kwargs)
+
     def save_lo(self, chkfile):
         """Cache the IAO+PAO transformation to disk.
 
