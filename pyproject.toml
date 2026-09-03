@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdmet"
+version = "0.1.0"
+description = "Periodic DMET with CASSCF/DMRG impurity solvers"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "pyscf>=2.11"]
+
+[tool.setuptools.packages.find]
+include = ["pdmet*"]
+
+[tool.setuptools.package-data]
+"pdmet.lib" = ["*.so"]
