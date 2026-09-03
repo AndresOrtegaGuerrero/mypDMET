@@ -183,7 +183,7 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
         if self.settings.nevpt2_nroots is None:
             roots = list(range(len(fcivec)))
             self._analyze_states(self.mc, fcivec, roots, allow_nto=self.settings.nto)
-            self.self._print_ci_dmrg(self.mc)
+            self._print_ci_dmrg(self.mc)
 
         return e_cell, RDM1
 
