@@ -193,6 +193,7 @@ class DMRGSettings:
     det_cutoff: float = (
         0.05  # Determinant cutoff for printing CI coefficients in DMRG solver
     )
+    singlet_embedding_casci: bool = False
 
 
 @dataclass

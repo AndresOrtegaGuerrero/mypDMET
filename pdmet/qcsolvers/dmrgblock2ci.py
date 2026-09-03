@@ -41,8 +41,9 @@ class DMRGBlock2CISolver(BaseDMRGBlock2Solver):
         cas_nelec, cas_norb = self._cas_sizes()
 
         nroots = self.settings.nroots
-        # When NEVPT2 will reuse this solve, make it NEVPT2-ready (restart_dir,
-        # noreorder, singlet_embedding) so its MPS matches what NEVPT2 expects.
+        # When NEVPT2 will reuse this solve, make it NEVPT2-ready (restart_dir
+        # keeps a clean copy of the MPS; singlet_embedding only if
+        # settings.dmrg.singlet_embedding_casci) so its MPS matches what NEVPT2 expects.
         path = "casci" if self._fuse_nevpt2() else None
         self.mc.fcisolver = self._get_dmrg_solver(
             self.settings.twoS,

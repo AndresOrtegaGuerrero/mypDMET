@@ -126,13 +126,19 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
         dmrg_solver.runtimeDir = solver_dir
         dmrg_solver.scratchDirectory = solver_dir
 
+        # No "noreorder": it disables Fiedler ordering and, with natural
+        # orbitals sorted by occupation
+        # No "singlet_embedding" by default
         block_extra_keyword = []
         if path == "casci":
-            block_extra_keyword = [
-                "restart_dir %s" % (solver_dir + "/restart"),
-                "noreorder",
-                "singlet_embedding",
-            ]
+            block_extra_keyword = ["restart_dir %s" % (solver_dir + "/restart")]
+            if getattr(dmrg_settings, "singlet_embedding_casci", False):
+                block_extra_keyword.append("singlet_embedding")
+                if nto_ndo and roots > 1:
+                    print(
+                        "  WARNING: singlet_embedding + tran_onepdm gives zero "
+                        "transition 1pdm for non-singlet states (NTOs will be empty)"
+                    )
 
         if nto_ndo and roots > 1:
             block_extra_keyword.append("tran_onepdm")
@@ -322,6 +328,11 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
                 "V_hole": None,
                 "U_part": None,
             }
+        if np.abs(t_dm1_cas).max() < 1e-6:
+            print(
+                f"  WARNING: transition 1pdm 0->{root} is numerically zero "
+                f"(max|T|={np.abs(t_dm1_cas).max():.1e}); check singlet_embedding"
+            )
 
         return self._build_nto(mc_ci, t_dm1_cas)
 
@@ -342,30 +353,67 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
         return self._build_ndo(mc_ci, dm1_I - dm1_0)
 
     def _print_ci_dmrg(self, mc_ci):
+        """CSFs of every root, columns = active orbitals in mc.mo_coeff order.
+
+        block2 reorders sites (Fiedler); the permutation it saved in
+        node0/orbital_reorder.npy is undone here. get_csf_coefficients needs
+        the singlet-embedding format for S != 0, so the MPS is converted in
+        memory (no extra DMRG run). Never fatal: energies/RDMs are done.
+        """
         from pyblock2.driver.core import DMRGDriver, SymmetryTypes
 
-        path = mc_ci.fcisolver.scratchDirectory + "/restart"
         det_cutoff = self.settings.dmrg.det_cutoff
-        driver = DMRGDriver(scratch=path, symm_type=SymmetryTypes.SU2, n_threads=1)
-        kets = driver.load_mps(tag="KET", nroots=mc_ci.fcisolver.nroots)
+        solvers = getattr(mc_ci.fcisolver, "fcisolvers", [mc_ci.fcisolver])
+        for solver in solvers:
+            try:
+                self._print_ci_one_solver(solver, det_cutoff, DMRGDriver, SymmetryTypes)
+            except Exception as exc:
+                print(f"  WARNING: DMRG CI print skipped ({exc!r})")
 
-        if mc_ci.fcisolver.nroots == 1:
-            print("\nDMRG CI coefficients:")
-            csfs, coeffs = driver.get_csf_coefficients(
-                kets, cutoff=det_cutoff, iprint=1
+    @staticmethod
+    def _print_ci_one_solver(solver, det_cutoff, DMRGDriver, SymmetryTypes):
+        node0 = os.path.join(solver.scratchDirectory, "node0")
+        path = os.path.join(solver.scratchDirectory, "restart")
+        if not os.path.isdir(path):
+            path = node0  # SA-CASSCF path: final MPS is still in node0
+        idx_file = os.path.join(node0, "orbital_reorder.npy")
+        idx = np.load(idx_file) if os.path.isfile(idx_file) else None
+
+        driver = DMRGDriver(scratch=path, symm_type=SymmetryTypes.SU2, n_threads=1)
+        kets = driver.load_mps(tag="KET", nroots=solver.nroots)
+        print(
+            f"\nDMRG CSFs (2S={solver.spin}, |c|>{det_cutoff}; 0 empty, 2 double, +/- singly)"
+        )
+        if idx is not None:
+            print(
+                f"  block2 site order {idx.tolist()} undone; columns = active orbitals"
             )
-        else:
-            for i in range(mc_ci.fcisolver.nroots):
-                ket = driver.split_mps(kets, iroot=i, tag="KET%d" % i)
-                print(f"\nRoot {i} DMRG CI coefficients:")
-                csfs, coeffs = driver.get_csf_coefficients(
-                    ket, cutoff=det_cutoff, iprint=1
-                )
+        for i in range(solver.nroots):
+            ket = (
+                driver.split_mps(kets, iroot=i, tag="KET%d" % i)
+                if solver.nroots > 1
+                else kets
+            )
+            if solver.spin != 0:
+                ket = driver.mps_change_to_singlet_embedding(ket, tag="KETSE%d" % i)
+            csfs, coeffs = driver.get_csf_coefficients(ket, cutoff=det_cutoff, iprint=0)
+            print(f"  Root {i}: {len(coeffs)} CSFs")
+            for k in np.argsort(-np.abs(coeffs)):
+                occ = np.asarray(csfs[k])
+                if idx is not None:
+                    tmp = np.empty(len(occ), dtype=int)
+                    tmp[idx[: len(occ)]] = occ  # site s holds orbital idx[s]
+                    occ = tmp
+                print(f"    {coeffs[k]:+.4f}  {''.join('0+-2'[o] for o in occ)}")
 
     def _load_dmrg_rdm1(self, mc_ci, bra, ket):
         """Load a Block2 1-RDM and spin-trace it if needed."""
         path = mc_ci.fcisolver.scratchDirectory
         filepath = os.path.join(path, f"node0/1pdm-{bra}-{ket}.npy")
+        transpose = False
+        if not os.path.isfile(filepath):  # e.g. tran_triangular wrote ket-bra only
+            filepath = os.path.join(path, f"node0/1pdm-{ket}-{bra}.npy")
+            transpose = True
 
         if not os.path.isfile(filepath):
             print(f"  Warning: 1-RDM file not found: {filepath}")
@@ -377,4 +425,4 @@ class BaseDMRGBlock2Solver(BaseCASSolver):
         if dm.ndim == 3:
             dm = dm.sum(axis=0)
 
-        return dm
+        return dm.T if transpose else dm
