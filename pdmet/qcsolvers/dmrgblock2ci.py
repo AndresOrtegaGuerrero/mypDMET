@@ -37,14 +37,20 @@ class DMRGBlock2CISolver(BaseDMRGBlock2Solver):
 
     def kernel(self):
         self._setup_mf()
-        self._reset_ntos()
+        self._reset_analysis()
         cas_nelec, cas_norb = self._cas_sizes()
 
         nroots = self.settings.nroots
-        # When NEVPT2 will reuse this solve, make it NEVPT2-ready (restart_dir,
-        # noreorder, singlet_embedding) so its MPS matches what NEVPT2 expects.
+        # When NEVPT2 will reuse this solve, make it NEVPT2-ready (restart_dir
+        # keeps a clean copy of the MPS; singlet_embedding only if
+        # settings.dmrg.singlet_embedding_casci) so its MPS matches what NEVPT2 expects.
         path = "casci" if self._fuse_nevpt2() else None
-        self.mc.fcisolver = self._get_dmrg_solver(self.settings.twoS, nroots, path=path)
+        self.mc.fcisolver = self._get_dmrg_solver(
+            self.settings.twoS,
+            nroots,
+            path=path,
+            nto_ndo=self.settings.nto or self.settings.ndo,
+        )
         weights = self.settings.state_percent  # validate() fills uniform if unset
         if nroots > 1:
             self.mc = self.mc.state_average_(weights)
@@ -65,8 +71,6 @@ class DMRGBlock2CISolver(BaseDMRGBlock2Solver):
 
         if self.settings.nevpt2_roots is not None:
             e_tot = self._run_nevpt2_standard(cas_norb, cas_nelec, e_tot)
-        elif self.settings.nto and nroots > 1:
-            self._compute_dmrg_ntos(cas_norb, cas_nelec)
 
         return e_cell, e_tot, RDM1
 

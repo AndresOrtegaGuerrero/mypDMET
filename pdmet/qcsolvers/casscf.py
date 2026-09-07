@@ -34,7 +34,7 @@ class CASSCFSolver(BaseCASSolver):
         RDM1     : (Norb, Norb) — 1-RDM in local basis
         """
         self._setup_mf()
-        self._reset_ntos()
+        self._reset_analysis()
         cas_nelec, cas_norb = self._cas_sizes()
         self._apply_state_averaging(state_specific_, state_average_, state_average_mix_)
         self._setup_cas_object(self.mc, cas_norb, cas_nelec)
@@ -149,17 +149,18 @@ class CASSCFSolver(BaseCASSolver):
         e_cell = lib.einsum("i,i->", w, e_cells)
         self.SS = np.mean(ss)
 
-        # NTOs straight from the state-averaged CASSCF. Skip when nevpt2_roots is
-        # set -- the NEVPT2 path computes them, and doing both would double them.
-        # Only valid within one (na, nb) sector; state-average-mix mixes sectors.
-        if self.settings.nto and self.settings.nevpt2_roots is None:
-            if all(n == nelecas_list[0] for n in nelecas_list):
-                self._compute_ntos(self.mc, fcivec, list(range(len(fcivec))), cas_norb)
-            else:
+        if self.settings.nto_source == "sa":
+            roots = list(range(len(fcivec)))
+            same_sector = all(n == nelecas_list[0] for n in nelecas_list)
+
+            if not same_sector:
                 print(
-                    "[nto] skipping NTOs for state-average-mix (mixed spin "
-                    "sectors); spin-resolved NTOs are not implemented yet."
+                    "[nto] state-average-mix: skipping NTOs (mixed spin "
+                    "sectors); NDOs are still computed -- intentional, "
+                    "difference densities are sector-safe."
                 )
+            self._analyze_states(self.mc, fcivec, roots, allow_nto=same_sector)
+
         return e_cell, RDM1
 
     def _run_nevpt2_mix(self, cas_norb, cas_nelec, e_tot):
@@ -194,6 +195,8 @@ class CASSCFSolver(BaseCASSolver):
                     f"NEVPT2 CASCI block {i} (2S = {spin}) did not converge in "
                     f"{max_cycle} cycles; raise settings.nevpt2_ci_max_cycle."
                 )
+            if self.settings.nto_source == "casci":
+                self._analyze_states(mc_ci, fcivec, nevpt2_roots[i])
 
             # Verify the spin sector: the penalty must actually have held.
             vecs = fcivec if isinstance(fcivec, (list, tuple)) else [fcivec]
@@ -206,8 +209,6 @@ class CASSCFSolver(BaseCASSolver):
                         f"sector -- raise nevpt2_nroots and select by <S^2>."
                     )
 
-            # NTOs from the pristine wavefunction, BEFORE NEVPT2 canonicalizes.
-            self._compute_ntos(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
             e_casci_nevpt2.extend(
                 self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
             )
@@ -237,8 +238,9 @@ class CASSCFSolver(BaseCASSolver):
 
         fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-        # NTOs from the pristine wavefunction, BEFORE NEVPT2 canonicalizes it.
-        self._compute_ntos(mc_ci, fcivec, nevpt2_roots, cas_norb)
+        if self.settings.nto_source == "casci":
+            self._analyze_states(mc_ci, fcivec, nevpt2_roots)
+
         e_casci_nevpt2 = self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots, cas_norb)
 
         print("=" * 45)

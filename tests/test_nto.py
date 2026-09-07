@@ -30,7 +30,7 @@ def test_rank1_transition_recovers_single_pair():
 
     T = np.outer(acceptor, donor)  # T_pq = acceptor_p * donor_q
 
-    lam, V_hole, U_part = BaseCASSolver._ntos_from_tdm1_cas(T)
+    lam, V_hole, U_part = BaseCASSolver._decompose_nto_cas(T)
 
     assert lam.shape == (1,), "rank-1 T must give exactly one pair"
     assert abs(lam[0] - 1.0) < 1e-12, "single normalized route must weigh 1"
@@ -45,7 +45,7 @@ def test_lambdas_sorted_nonneg_and_frobenius_identity():
     rng = np.random.default_rng(42)
     T = rng.standard_normal((7, 7))
 
-    lam, V_hole, U_part = BaseCASSolver._ntos_from_tdm1_cas(T)
+    lam, V_hole, U_part = BaseCASSolver._decompose_nto_cas(T)
 
     assert (np.diff(lam) <= 1e-12).all(), "lambdas not sorted descending"
     assert (lam >= 0).all(), "negative lambda (sigma**2 cannot be negative)"
@@ -59,7 +59,7 @@ def test_svd_reconstructs_T():
     """U diag(sqrt(lambda)) V_hole^dagger rebuilds T -- guards a transpose bug."""
     rng = np.random.default_rng(7)
     T = rng.standard_normal((5, 5))
-    lam, V_hole, U_part = BaseCASSolver._ntos_from_tdm1_cas(T)
+    lam, V_hole, U_part = BaseCASSolver._decompose_nto_cas(T)
     T_rebuilt = U_part @ np.diag(np.sqrt(lam)) @ V_hole.conj().T
     assert np.allclose(T_rebuilt, T, atol=1e-10)
 
@@ -85,7 +85,7 @@ def test_fix_orbital_phases_preserves_reconstruction():
     """After the phase fix, U diag(sqrt(lam)) V^H must still rebuild T."""
     rng = np.random.default_rng(3)
     T = rng.standard_normal((5, 5))
-    lam, V, U = BaseCASSolver._ntos_from_tdm1_cas(T)
+    lam, V, U = BaseCASSolver._decompose_nto_cas(T)
     Vf, Uf = BaseCASSolver._fix_orbital_phases(V, U)
     assert np.allclose(Uf @ np.diag(np.sqrt(lam)) @ Vf.conj().T, T, atol=1e-10)
 
@@ -93,7 +93,7 @@ def test_fix_orbital_phases_preserves_reconstruction():
 def test_numerical_zero_pairs_are_dropped():
     """sigma**2 <= thresh pairs are pruned as floating-point noise."""
     T = np.diag([1.0, 0.5, 1e-15, 0.0])
-    lam, V_hole, U_part = BaseCASSolver._ntos_from_tdm1_cas(T, thresh=1e-12)
+    lam, V_hole, U_part = BaseCASSolver._decompose_nto_cas(T, thresh=1e-12)
     assert len(lam) == 2, "only the two real singular values survive"
     assert np.allclose(np.sort(lam)[::-1], [1.0, 0.25])
 
@@ -188,6 +188,7 @@ def h4_pdmet(tmp_path_factory):
     # ground (0) + three excited roots on the ground-optimized orbitals
     pdmet_obj.solver.nevpt2_roots = [0, 1, 2, 3]
     pdmet_obj.solver.nevpt2_nroots = 4
+    pdmet_obj.solver.nto = True  # explicit-flag contract: NEVPT2 no longer implies NTOs
     pdmet_obj.solver.nroots = 1
     pdmet_obj.initialize()
     pdmet_obj.one_shot()
@@ -366,6 +367,7 @@ def h2chain_pdmet(tmp_path_factory):
     pdmet_obj.solver.e_shift = 0.2  # keep singlets
     pdmet_obj.solver.nevpt2_roots = [0, 1, 2]
     pdmet_obj.solver.nevpt2_nroots = 3
+    pdmet_obj.solver.nto = True  # explicit-flag contract: NEVPT2 no longer implies NTOs
     pdmet_obj.solver.nroots = 1
     pdmet_obj.initialize()
     pdmet_obj.one_shot()
@@ -466,3 +468,82 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v", *sys.argv[1:]]))
+
+
+# --------------------------------------------------------------------------- #
+#  5. Both sources requested: contract R3 (NEVPT2 mc_ci wins, no doubling)    #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(scope="module")
+def h2chain_pdmet_both(tmp_path_factory):
+    """nroots=3 SA-CASSCF AND nevpt2_roots=[0,1,2]: analysis must come from
+    the NEVPT2 mc_ci only -- one list of 3, never 6."""
+    from pyscf.pbc import gto, scf, df
+    from pdmet import dmet
+
+    work = tmp_path_factory.mktemp("h2chain_both")
+    gdf_file = os.path.join(work, "gdf.h5")
+
+    d_hh, a_x, vac = 1.0, 3.0, 20.0
+    cell = gto.Cell()
+    cell.atom = [
+        ["H", (0.0, 0.5 * vac, 0.5 * vac)],
+        ["H", (d_hh, 0.5 * vac, 0.5 * vac)],
+    ]
+    cell.a = np.diag([a_x, vac, vac])
+    cell.basis = "gth-dzv"
+    cell.pseudo = "gth-pade"
+    cell.spin = 0
+    cell.unit = "Angstrom"
+    cell.verbose = 0
+    cell.build()
+
+    kmesh = [1, 1, 1]
+    kpts = cell.make_kpts(kmesh)
+    if not os.path.exists(gdf_file):
+        gdf = df.GDF(cell, kpts)
+        gdf._cderi_to_save = gdf_file
+        gdf.build()
+
+    kmf = scf.KRHF(cell, kpts).density_fit()
+    kmf.with_df._cderi = gdf_file
+    kmf.exxdiv = None
+    kmf.run()
+
+    pdmet_obj = dmet.pDMET(cell, kmf, w90=None, lo_method="iao+pao", solver="CASSCF")
+    pdmet_obj.lobasis.minao = {"H": "gth-szv"}
+    pdmet_obj.emb.impCluster = [1, 2]
+    pdmet_obj.solver.twoS = 0
+    pdmet_obj.solver.cas = (2, 2)
+    pdmet_obj.solver.e_shift = 0.2
+    pdmet_obj.solver.nroots = 3
+    pdmet_obj.solver.state_percent = [1.0, 0.0, 0.0]
+    pdmet_obj.solver.nevpt2_roots = [0, 1, 2]
+    pdmet_obj.solver.nevpt2_nroots = 3
+    pdmet_obj.solver.nto = True
+    pdmet_obj.solver.ndo = True
+    pdmet_obj.initialize()
+    pdmet_obj.one_shot()
+    return pdmet_obj
+
+
+@pytest.mark.slow
+def test_single_source_no_doubling(h2chain_pdmet_both):
+    """SA block must be skipped when nevpt2_roots is set (else every state
+    index is silently wrong)."""
+    assert len(h2chain_pdmet_both.ntos_per_root) == 3, "both sources ran"
+    assert len(h2chain_pdmet_both.ndos_per_root) == 3, "both sources ran"
+
+
+@pytest.mark.slow
+def test_both_sources_analysis_is_pristine(h2chain_pdmet_both):
+    """The mc_ci source was analyzed pre-canonicalization: sigma->sigma*
+    transition density asymmetric, |kappa| ~ 1."""
+    lams = [h2chain_pdmet_both.ntos_per_root[s]["lambdas"] for s in (1, 2)]
+    state = 1 + int(np.argmax([lam[0] if len(lam) else 0.0 for lam in lams]))
+
+    T = h2chain_pdmet_both.t_dm1s[state]
+    assert np.linalg.norm(T - T.T) / np.linalg.norm(T) > 0.5
+    assert abs(h2chain_pdmet_both.ndos_per_root[state]["kappa"][0]) > 0.5
+    assert abs(h2chain_pdmet_both.ndos_per_root[state]["p_A"] - 1.0) < 0.3
