@@ -91,12 +91,19 @@ class CASSCFSolver(BaseCASSolver):
             weight_list = []
             for solver in state_average_mix_:
                 ss = 0.5 * solver.spin * (0.5 * solver.spin + 1)
-                fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=ss)
+
+                shift = (
+                    self.settings.e_shift if self.settings.e_shift is not None else 0.2
+                )
+                base = (
+                    fci.direct_spin0.FCI()
+                    if solver.spin == 0
+                    else fci.direct_spin1.FCI()
+                )
+                fci_solver = fci.addons.fix_spin(base, shift=shift, ss=ss)
                 fci_solver.spin = solver.spin
                 fci_solver.nroots = solver.roots
-                fci_solver.max_cycle = (
-                    300  # Hardcoded for now, can be made a user input if needed
-                )
+                fci_solver.max_cycle = 300
                 solvers.append(fci_solver)
                 weight_list += solver.weights
 
@@ -182,7 +189,9 @@ class CASSCFSolver(BaseCASSolver):
 
             # Fresh solver: same construction as _apply_state_averaging.
             ss_target = 0.5 * spin * (0.5 * spin + 1)
-            fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=ss_target)
+            shift = self.settings.e_shift if self.settings.e_shift is not None else 0.2
+            base = fci.direct_spin0.FCI() if spin == 0 else fci.direct_spin1.FCI()
+            fci_solver = fci.addons.fix_spin(base, shift=shift, ss=ss_target)
             fci_solver.spin = spin
             fci_solver.nroots = nevpt2_nroots[i]
             fci_solver.max_cycle = max_cycle
