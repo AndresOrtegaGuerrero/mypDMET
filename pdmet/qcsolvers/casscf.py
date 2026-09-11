@@ -95,12 +95,11 @@ class CASSCFSolver(BaseCASSolver):
                 shift = (
                     self.settings.e_shift if self.settings.e_shift is not None else 0.2
                 )
-                base = (
-                    fci.direct_spin0.FCI()
-                    if solver.spin == 0
-                    else fci.direct_spin1.FCI()
+                # direct_spin1 here on purpose: inside the macro loop the CI is
+                # only loosely converged and direct_spin0 rejects that.
+                fci_solver = fci.addons.fix_spin(
+                    fci.direct_spin1.FCI(), shift=shift, ss=ss
                 )
-                fci_solver = fci.addons.fix_spin(base, shift=shift, ss=ss)
                 fci_solver.spin = solver.spin
                 fci_solver.nroots = solver.roots
                 fci_solver.max_cycle = 300
@@ -181,6 +180,7 @@ class CASSCFSolver(BaseCASSolver):
         max_cycle = getattr(self.settings, "nevpt2_ci_max_cycle", 500)
 
         # Iterate for each solver
+        ci_offset = 0
         for i, solver in enumerate(solvers):
             spin = solver.spin
             nelecb = (cas_nelec - spin) // 2
@@ -197,7 +197,25 @@ class CASSCFSolver(BaseCASSolver):
             fci_solver.max_cycle = max_cycle
             mc_ci.fcisolver = fci_solver
 
-            fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
+            # Warm start from the converged SA vectors of this spin block;
+            # direct_spin0 needs a symmetric (c == c.T) guess.
+            n_sa_roots = solver.roots
+            ci_vectors = self.mc.ci[ci_offset : ci_offset + n_sa_roots]
+            if len(ci_vectors) != n_sa_roots:
+                raise RuntimeError(
+                    f"Missing SA CI vectors for spin block {i}: "
+                    f"expected {n_sa_roots}, got {len(ci_vectors)}."
+                )
+            ci_offset += n_sa_roots
+            if spin == 0:
+                ci0 = [
+                    0.5 * (c + c.T) / np.linalg.norm(0.5 * (c + c.T))
+                    for c in ci_vectors
+                ]
+            else:
+                ci0 = list(ci_vectors)
+
+            fcivec = mc_ci.kernel(self.mc.mo_coeff, ci0=ci0)[2]
 
             if not mc_ci.converged:
                 raise RuntimeError(
