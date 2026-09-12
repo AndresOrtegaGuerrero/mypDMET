@@ -199,7 +199,7 @@ class CASSCFSolver(BaseCASSolver):
 
             # Warm start from the converged SA vectors of this spin block;
             # direct_spin0 needs a symmetric (c == c.T) guess.
-            n_sa_roots = solver.roots
+            n_sa_roots = solver.nroots
             ci_vectors = self.mc.ci[ci_offset : ci_offset + n_sa_roots]
             if len(ci_vectors) != n_sa_roots:
                 raise RuntimeError(
