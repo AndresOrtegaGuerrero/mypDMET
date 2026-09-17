@@ -110,22 +110,30 @@ def _cas_weights(vec_cas, top=3, tol=0.05):
 
 
 def _print_nto_table(state, info, n_kept, floor):
-    lam = info["lambdas"]
-    total = lam.sum()
-    n_total = len(lam)
+    lam, bra = info["lambdas"], info.get("bra", 0)
+    total, n_total = lam.sum(), len(lam)
 
-    if state == 0:
+    if state == bra:
         print(
-            "\nState 0 = ground density (T^00 = gamma_0), so lambda_i = n_i^2. "
-            "Not a transition."
+            f"\nState {state} is the bra of its spin block: T^00 = a density, "
+            "not a transition."
         )
 
-    print(f"\nNTOs for state {state}  (top {n_kept} of {n_total} nonzero pairs)")
-    print(f"  sum(lambda) = {total:.4f}   [~2 = clean single excitation]")
-    print("  pair       lambda     % of transition")
+    print(
+        f"\nNTOs for state {state}  (bra = state {bra}; top {n_kept} of {n_total} pairs)"
+    )
+    print(
+        f"  ||T||^2 = {total:.4f}   alpha {info.get('omega_a', 0.0):.3f}  "
+        f"beta {info.get('omega_b', 0.0):.3f}   "
+        "[1 per spin channel for a clean single excitation]"
+    )
+    print("  pair     lambda       %     imp(hole)  imp(part)")
     for i in range(n_kept):
         pct = lam[i] / total * 100 if total > 0 else 0.0
-        print(f"  {i:3d}     {lam[i]:10.5f}     {pct:6.2f}%")
+        print(
+            f"  {i:3d}   {lam[i]:9.5f}  {pct:6.2f}   "
+            f"{info['imp_hole'][i]:8.3f}   {info['imp_part'][i]:8.3f}"
+        )
         if info.get("V_hole_cas") is not None:
             print(f"            hole: {_cas_weights(info['V_hole_cas'][:, i])}")
             print(f"            part: {_cas_weights(info['U_part_cas'][:, i])}")
@@ -284,56 +292,62 @@ def get_ndos(
 
 
 def get_trans_dipole(pdmet):
-    """Transition dipoles <0|r|I> from the transported transition densities."""
+    """Transition dipoles <bra|r|I> (a.u.) from the transported transition
+    densities. Entry i == bra is a zero placeholder (density, not transition).
+    """
     t_dm1s = _require(pdmet, "t_dm1s", "solver.nto=True")
+    infos = _require(pdmet, "ntos_per_root", "solver.nto=True")
+    _check_gamma(pdmet, "transition dipole")
 
-    charges = pdmet.cell.atom_charges()
-    coords = pdmet.cell.atom_coords()
-    nuc_charge_center = np.einsum("z,zx->x", charges, coords) / charges.sum()
-    pdmet.cell.set_common_orig_(nuc_charge_center)
-    dip_ints = pdmet.cell.intor("cint1e_r_sph", comp=3)
+    # Molecular integral on the Cell: no lattice sum. Valid because a
+    # transition density is traceless and localized (origin-independent).
+    dip_ints = pdmet.cell.intor("int1e_r", comp=3)
     ao2eo = pdmet.local.get_ao2eo(pdmet.emb_orbs)[0]
 
     dipoles = []
-    for i, t_dm1_emb in enumerate(t_dm1s):
+    for i, (t_dm1_emb, info) in enumerate(zip(t_dm1s, infos)):
+        bra = info.get("bra", 0)
+        if i == bra:
+            dipoles.append(np.zeros(3))
+            continue
         t_dm1_ao = ao2eo @ t_dm1_emb @ ao2eo.T.conj()
         dip = np.einsum("xij,ji->x", dip_ints, t_dm1_ao).real
         dipoles.append(dip)
-        if i == 0:
-            print(
-                "Ground-state electronic dipole (embedding only, no nuclei; "
-                "not a transition): {0:3.5f} {1:3.5f} {2:3.5f}".format(*dip)
-            )
-            continue
         print(
-            "Transition dipole <0|r|{0:d}>: {1:3.5f} {2:3.5f} {3:3.5f} "
-            "| Norm: {4:3.5f}".format(i, *dip, np.linalg.norm(dip))
+            f"<{bra}|r|{i}>: {dip[0]:9.5f} {dip[1]:9.5f} {dip[2]:9.5f} "
+            f"| Norm: {np.linalg.norm(dip):8.5f}"
         )
     return dipoles
 
 
 def get_oscillator_strengths(pdmet, energies=None):
-    """f_n = (2/3) dE |mu_0n|^2 in a.u. (Eq. 46, JCP 150, 174121).
+    """f = (2/3) dE |mu|^2 in a.u. (Eq. 46, JCP 150, 174121).
 
-    energies defaults to mc.e_states; pass the NEVPT2 totals to get f at that
-    level. Returns [(dE, |mu|, f)] indexed by state; entry 0 is a placeholder.
+    dE uses the energies stored with each transition density (same states as
+    mu by construction). Pass energies= (same state order, e.g. NEVPT2
+    totals) to override. Returns [(dE, |mu|, f)] per state; bra rows are 0.
     """
+    infos = _require(pdmet, "ntos_per_root", "solver.nto=True")
     if energies is None:
-        energies = getattr(pdmet.qcsolver.mc, "e_states", None)
-    if energies is None:
-        raise ValueError("no energies: pass energies= or run a multi-root solver")
-
+        energies = [info["e"] for info in infos]
     e = np.atleast_1d(np.asarray(energies, dtype=float))
+    if len(e) != len(infos):
+        raise ValueError(f"got {len(e)} energies for {len(infos)} states")
     dips = get_trans_dipole(pdmet)
 
-    rows = [(0.0, 0.0, 0.0)]
-    print("\n  state   dE (eV)     |mu| (au)      f_osc")
-    for i in range(1, min(len(dips), len(e))):
-        de = float(e[i] - e[0])
-        mu = float(np.linalg.norm(dips[i]))
+    rows = []
+    print("\n  state  bra   dE (eV)    |mu| (au)      f_osc")
+    for i, (info, mu_vec) in enumerate(zip(infos, dips)):
+        bra = info.get("bra", 0)
+        de = float(e[i] - e[bra])
+        mu = float(np.linalg.norm(mu_vec))
         f = 2.0 / 3.0 * de * mu**2
         rows.append((de, mu, f))
-        print(f"  {i:3d}   {de * 27.211386245988:8.3f}   {mu:9.5f}   {f:10.6f}")
+        if i != bra:
+            print(
+                f"  {i:3d}   {bra:3d}  {de * 27.211386245988:8.3f}  "
+                f"{mu:9.5f}  {f:10.6f}"
+            )
     return rows
 
 

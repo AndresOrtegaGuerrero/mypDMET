@@ -43,8 +43,16 @@ class BaseCASSolver(BaseSolver):
             setattr(self, dm1_attr, dm1s)
             setattr(self, info_attr, infos)
 
+        # First entry appended by this block is its bra (fcivec[0]); the flat
+        # index of that entry is what texcited needs to label transitions.
+        bra = len(infos)
+        e_states = getattr(mc, "e_states", None)
+        if e_states is None:
+            e_states = mc.e_tot
+        e_states = np.atleast_1d(e_states)
         for root in roots:
             dm1, info = compute(mc, fcivec, root)
+            info.update(bra=bra, root=root, e=float(e_states[root]))
             dm1s.append(dm1)
             infos.append(info)
 
@@ -533,12 +541,17 @@ class BaseCASSolver(BaseSolver):
         t_dm1_emb = orbcas @ t_dm1_cas @ orbcas.T
 
         V_eo, U_eo = self._fix_orbital_phases(orbcas @ V_cas, orbcas @ U_cas)
+        # EO basis is orthonormal: squared norm over the first Nimp rows is the
+        # impurity weight of each NTO (< ~0.9 => excitation leaks into the bath).
+        n = self.Nimp
         info = {
             "lambdas": lam,
             "V_hole": V_eo,
             "U_part": U_eo,
             "V_hole_cas": V_cas,
             "U_part_cas": U_cas,
+            "imp_hole": (V_eo[:n] ** 2).sum(0),
+            "imp_part": (U_eo[:n] ** 2).sum(0),
         }
         return t_dm1_emb, info
 
@@ -574,11 +587,14 @@ class BaseCASSolver(BaseSolver):
 
     def _transition_dm1(self, mc_ci, fcivec, root):
         """Get a PySCF CAS transition density and build its NTOs."""
-        t_dm1_cas = mc_ci.fcisolver.trans_rdm1(
+        # sum(lambda) = ||T||_F^2; keep the alpha/beta split so a clean
+        # one-channel (high-spin) excitation reads as 1, not "half of 2".
+        ta, tb = mc_ci.fcisolver.trans_rdm1s(
             fcivec[0], fcivec[root], mc_ci.ncas, mc_ci.nelecas
         )
-
-        return self._build_nto(mc_ci, t_dm1_cas)
+        t_dm1_emb, info = self._build_nto(mc_ci, ta + tb)
+        info["omega_a"], info["omega_b"] = float(np.sum(ta**2)), float(np.sum(tb**2))
+        return t_dm1_emb, info
 
     def _difference_dm1(self, mc_ci, fcivec, root):
         """Get PySCF CAS state densities and build their NDOs."""
