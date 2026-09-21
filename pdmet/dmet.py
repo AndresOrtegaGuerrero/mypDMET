@@ -24,7 +24,7 @@ from pyscf import lib
 from scipy import optimize
 from pdmet import localbasis, diis, df_hamiltonian
 from pdmet.schmidtbasis import get_bath_using_RHF_1RDM
-from pdmet.tools import tchkfile, tplot, tprint, tunix, misc
+from pdmet.tools import tchkfile, tplot, tprint, tunix, misc, texcited
 from pdmet.tools.optional import to_numpy
 from pdmet.lib import libdmet
 from pdmet.settings import (
@@ -101,6 +101,8 @@ class pDMET:
         self.emb_mf_1RDM = None
         self.t_dm1s = None  # transition densities (multi-root NTO path)
         self.ntos_per_root = None  # NTO decomposition per root
+        self.d_dm1s = None  # transition densities (multi-root NDO path)
+        self.ndos_per_root = None  # NDO decomposition per root
         self.e_tot = 0.0  # energy per unit cell
         self.e_corr = 0.0
         self.e_madelung = 0.0  # finite-size exchange constant for an exxdiv guess
@@ -294,153 +296,6 @@ class pDMET:
             )
 
         tprint.print_msg("==========================")
-
-    def _rotate_mat_nto(self, state=0, n_pairs=None):
-        """LO-basis rotation matrix (nlo, 2*n_kept) for plot_wf: columns are
-        interleaved donor, acceptor, ... for the top n_pairs of `state`. NTOs
-        live in the EO basis; emb_orbs[0] maps EO -> LO.
-        """
-        assert self.ntos_per_root is not None, (
-            "ntos_per_root is None -- no NTOs were computed. Set solver.nto=True "
-            "(or solver.nevpt2_roots) on a multi-root CASCI/CASSCF/DMRG run."
-        )
-        info = self.ntos_per_root[state]
-        n = n_pairs if n_pairs is not None else self.solver.nto_npairs
-        n_kept = min(n, len(info["lambdas"]))
-
-        cols = []
-        for i in range(n_kept):
-            cols.append(info["V_hole"][:, i])  # donor
-            cols.append(info["U_part"][:, i])  # acceptor
-        nto_eo = np.column_stack(cols)  # (Norb, 2*n_kept)
-        return self.emb_orbs[0] @ nto_eo  # (nlo, 2*n_kept)
-
-    def get_ntos(
-        self,
-        state=0,
-        n_pairs=None,
-        lambda_floor=None,
-        outdir=None,
-        grid=(50, 50, 50),
-        fmt="cube",
-    ):
-        """Print the lambda table for NTO `state` and return its top pairs;
-        if `outdir` is given (Gamma-only), also write donor/acceptor cubes.
-
-        state        : positional index into self.ntos_per_root (= t_dm1s order).
-        n_pairs/lambda_floor : default to settings.nto_npairs / nto_lambda_floor.
-        Returns a list of {'pair', 'lambda', 'donor', 'acceptor'} (EO basis).
-        The lambda table works at any k-mesh; only cube export needs Nkpts == 1.
-        """
-        assert self.ntos_per_root is not None, (
-            "ntos_per_root is None -- no NTOs were computed. Set solver.nto=True "
-            "(or solver.nevpt2_roots) on a multi-root CASCI/CASSCF/DMRG run."
-        )
-
-        n = n_pairs if n_pairs is not None else self.solver.nto_npairs
-        floor = (
-            lambda_floor if lambda_floor is not None else self.solver.nto_lambda_floor
-        )
-
-        info = self.ntos_per_root[state]
-        lam = info["lambdas"]
-        n_above_floor = int(np.sum(lam >= floor))
-        n_kept = min(n, n_above_floor)
-
-        self._print_nto_table(state, lam, n_kept, floor)
-
-        # Cube export is Gamma-only; refuse on outdir alone (independent of how
-        # many pairs survive the floor).
-        if outdir is not None:
-            if self.local.Nkpts > 1:
-                raise NotImplementedError(
-                    f"NTO cube export is currently Gamma-only "
-                    f"(Nkpts={self.local.Nkpts}). The lambda values and "
-                    f"embedding-basis orbital coefficients are available on "
-                    f"self.ntos_per_root[{state}] for any k-mesh; only the "
-                    f"real-space cube generation is restricted. Use "
-                    f"kmesh=[1,1,1] or implement supercell plotting."
-                )
-            if n_kept > 0:
-                self._dump_nto_cubes(state, info, n_kept, outdir, grid, fmt)
-
-        return [
-            {
-                "pair": i,
-                "lambda": float(lam[i]),
-                "donor": info["V_hole"][:, i],
-                "acceptor": info["U_part"][:, i],
-            }
-            for i in range(n_kept)
-        ]
-
-    def _print_nto_table(self, state, lam, n_kept, floor):
-        """Print the ORCA-style NTO summary table for one state."""
-        total = lam.sum()
-        n_total = len(lam)
-        print(f"\nNTOs for state {state}  (top {n_kept} of {n_total} nonzero pairs)")
-        print("  [spin-traced: single excitation lam~2, ground NOs lam~n^2]")
-        print("  pair       lambda      % of sum(lambda)")
-        for i in range(n_kept):
-            pct = lam[i] / total * 100 if total > 0 else 0.0
-            print(f"  {i:3d}     {lam[i]:10.5f}      {pct:6.2f}%")
-        if n_kept < n_total:
-            print(
-                f"  ...     (skipped {n_total - n_kept} pairs below "
-                f"floor={floor:.1e} or beyond n_pairs)"
-            )
-        if total > 0 and n_kept > 0:
-            print(
-                f"  sum(lambda) kept / all = {lam[:n_kept].sum() / total * 100:5.1f}%"
-            )
-
-    def _dump_nto_cubes(self, state, info, n_kept, outdir, grid, fmt):
-        """Write 2*n_kept cube/xsf files (donor + acceptor per pair) via plot_wf,
-        renamed to encode pair role and lambda weight. Grid is built once.
-        """
-        os.makedirs(outdir, exist_ok=True)
-        lam = info["lambdas"]
-
-        rotate_mat = self._rotate_mat_nto(state=state, n_pairs=n_kept)
-        tmp_prefix = os.path.join(outdir, f"_nto_state{state}_tmp")
-        tplot.plot_wf(
-            self.local,
-            rotate_mat,
-            tmp_prefix,
-            supercell=self.kmesh,
-            grid=grid,
-            fmt=fmt,
-        )
-
-        # plot_wf writes {prefix}-{col}.{fmt}; columns are interleaved
-        # donor(2i), acceptor(2i+1). Rename to descriptive, weight-tagged names.
-        for i in range(n_kept):
-            lam_tag = f"{lam[i]:.3f}"
-            for col, role in ((2 * i, "donor"), (2 * i + 1, "acceptor")):
-                src = f"{tmp_prefix}-{col}.{fmt}"
-                dst = os.path.join(
-                    outdir, f"state{state}_pair{i}_{role}_lam{lam_tag}.{fmt}"
-                )
-                if os.path.exists(src):
-                    os.replace(src, dst)
-                    print(f"  [state {state}] wrote {dst}")
-
-    def _auto_export_ntos(self):
-        """Auto-emit NTO tables + cubes when settings.nto_export is True.
-
-        The lambda tables print at any k-mesh. Cubes are Gamma-only; at k>1 we
-        skip them with a note instead of aborting an already-expensive run.
-        """
-        n_states = len(self.ntos_per_root)
-        gamma = self.local.Nkpts == 1
-        outdir = os.path.join(getattr(self, "outdir", "."), "ntos") if gamma else None
-        if not gamma:
-            print(
-                f"[nto_export] Nkpts={self.local.Nkpts} > 1: printing lambda "
-                f"tables only; cube export is Gamma-only."
-            )
-        for state in range(n_states):
-            self.get_ntos(state, outdir=outdir)
 
     def _print_lo_labels(self):
         """Pretty-print the local-orbital basis and the impurity selection.
@@ -678,6 +533,8 @@ class pDMET:
         # NEVPT2 -- exposes them the same way.
         self.t_dm1s = getattr(self.qcsolver, "t_dm1s", None)
         self.ntos_per_root = getattr(self.qcsolver, "ntos_per_root", None)
+        self.d_dm1s = getattr(self.qcsolver, "d_dm1s", None)
+        self.ndos_per_root = getattr(self.qcsolver, "ndos_per_root", None)
         # ------------------------------------
         # ------------------------------------
         # Update correlated 1-RDM
@@ -757,8 +614,7 @@ class pDMET:
             self.e_imp = e_cell - self.local.e_core
 
         # NTO cube auto-export works for ANY path that produced NTOs.
-        if self.solver.nto_export and self.ntos_per_root is not None:
-            self._auto_export_ntos()
+        texcited.auto_export(self)
 
     def _compute_dmet_core_energy(self, RDM1):
         """Compute energy contribution from DMET-frozen (unentangled) bath orbitals
@@ -1936,6 +1792,21 @@ class pDMET:
         )
         return (eigvals, eigvecs)
 
+    def get_ntos(self, *args, **kwargs):
+        return texcited.get_ntos(self, *args, **kwargs)
+
+    def get_ndos(self, *args, **kwargs):
+        return texcited.get_ndos(self, *args, **kwargs)
+
+    def get_trans_dipole(self):
+        return texcited.get_trans_dipole(self)
+
+    def get_attach_detach_density(self, state):
+        return texcited.get_attach_detach_density(self, state)
+
+    def get_oscillator_strengths(self, *args, **kwargs):
+        return texcited.get_oscillator_strengths(self, *args, **kwargs)
+
     def save_lo(self, chkfile):
         """Cache the IAO+PAO transformation to disk.
 
@@ -1983,7 +1854,8 @@ class pDMET:
               - "mf"          : embedded mean-field MOs
               - "mc"          : CASSCF MOs
               - "nat"         : CASSCF natural orbitals
-              - "nto"         : NTOs (requires NEVPT2)
+              - "nto"         : NTOs (requires solver.nto=True)
+              - "ndo"         : NDOs (requires solver.ndo=True)
         """
 
         # Each handler returns the rotation matrix that mixes LOs into the
@@ -2003,7 +1875,8 @@ class pDMET:
             "mf": lambda: _emb().dot(self.qcsolver.mf.mo_coeff),
             "mc": lambda: _emb().dot(self.qcsolver.mo),
             "nat": lambda: _emb().dot(self.qcsolver.mo_nat),
-            "nto": self._rotate_mat_nto,
+            "nto": lambda: texcited.rotate_mat_nto(self),
+            "ndo": lambda: texcited.rotate_mat_ndo(self),
         }
         if orb not in handlers:
             raise ValueError(f"Unknown orb={orb!r}. Choose from: {tuple(handlers)}.")
@@ -2019,31 +1892,3 @@ class pDMET:
             grid=grid,
             fmt=fmt,
         )
-
-    def get_trans_dipole(self):
-        """Calculate transition dipole"""
-        assert self.t_dm1s is not None, (
-            "No transition densities -- set solver.nto=True (or nevpt2_roots) "
-            "on a multi-root run."
-        )
-        charges = self.cell.atom_charges()
-        coords = self.cell.atom_coords()
-        nuc_charge_center = np.einsum("z,zx->x", charges, coords) / charges.sum()
-        self.cell.set_common_orig_(nuc_charge_center)
-        dip_ints = self.cell.intor("cint1e_r_sph", comp=3)
-        ao2eo = self.local.get_ao2eo(self.emb_orbs)[0]
-
-        def makedip(ci_id):
-            t_dm1_emb = self.t_dm1s[ci_id]
-            # transform density matrix from MO to AO representation
-            t_dm1_ao = ao2eo @ t_dm1_emb @ ao2eo.T.conj()
-            return np.einsum("xij,ji->x", dip_ints, t_dm1_ao).real
-
-        for i in range(len(self.t_dm1s)):
-            dipole = makedip(i)
-            norm = np.linalg.norm(dipole)
-            print(
-                "Transition dipole between |0> and |{0:d}>: {1:3.5f} {2:3.5f} {3:3.5f} | Norm: {4:3.5f}".format(
-                    i, dipole[0], dipole[1], dipole[2], norm
-                )
-            )

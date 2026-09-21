@@ -34,7 +34,7 @@ class CASSCFSolver(BaseCASSolver):
         RDM1     : (Norb, Norb) — 1-RDM in local basis
         """
         self._setup_mf()
-        self._reset_ntos()
+        self._reset_analysis()
         cas_nelec, cas_norb = self._cas_sizes()
         self._apply_state_averaging(state_specific_, state_average_, state_average_mix_)
         self._setup_cas_object(self.mc, cas_norb, cas_nelec)
@@ -91,12 +91,18 @@ class CASSCFSolver(BaseCASSolver):
             weight_list = []
             for solver in state_average_mix_:
                 ss = 0.5 * solver.spin * (0.5 * solver.spin + 1)
-                fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=ss)
+
+                shift = (
+                    self.settings.e_shift if self.settings.e_shift is not None else 0.2
+                )
+                # direct_spin1 here on purpose: inside the macro loop the CI is
+                # only loosely converged and direct_spin0 rejects that.
+                fci_solver = fci.addons.fix_spin(
+                    fci.direct_spin1.FCI(), shift=shift, ss=ss
+                )
                 fci_solver.spin = solver.spin
                 fci_solver.nroots = solver.roots
-                fci_solver.max_cycle = (
-                    300  # Hardcoded for now, can be made a user input if needed
-                )
+                fci_solver.max_cycle = 300
                 solvers.append(fci_solver)
                 weight_list += solver.weights
 
@@ -149,17 +155,18 @@ class CASSCFSolver(BaseCASSolver):
         e_cell = lib.einsum("i,i->", w, e_cells)
         self.SS = np.mean(ss)
 
-        # NTOs straight from the state-averaged CASSCF. Skip when nevpt2_roots is
-        # set -- the NEVPT2 path computes them, and doing both would double them.
-        # Only valid within one (na, nb) sector; state-average-mix mixes sectors.
-        if self.settings.nto and self.settings.nevpt2_roots is None:
-            if all(n == nelecas_list[0] for n in nelecas_list):
-                self._compute_ntos(self.mc, fcivec, list(range(len(fcivec))), cas_norb)
-            else:
+        if self.settings.nto_source == "sa":
+            roots = list(range(len(fcivec)))
+            same_sector = all(n == nelecas_list[0] for n in nelecas_list)
+
+            if not same_sector:
                 print(
-                    "[nto] skipping NTOs for state-average-mix (mixed spin "
-                    "sectors); spin-resolved NTOs are not implemented yet."
+                    "[nto] state-average-mix: skipping NTOs (mixed spin "
+                    "sectors); NDOs are still computed -- intentional, "
+                    "difference densities are sector-safe."
                 )
+            self._analyze_states(self.mc, fcivec, roots, allow_nto=same_sector)
+
         return e_cell, RDM1
 
     def _run_nevpt2_mix(self, cas_norb, cas_nelec, e_tot):
@@ -173,6 +180,7 @@ class CASSCFSolver(BaseCASSolver):
         max_cycle = getattr(self.settings, "nevpt2_ci_max_cycle", 500)
 
         # Iterate for each solver
+        ci_offset = 0
         for i, solver in enumerate(solvers):
             spin = solver.spin
             nelecb = (cas_nelec - spin) // 2
@@ -181,19 +189,41 @@ class CASSCFSolver(BaseCASSolver):
 
             # Fresh solver: same construction as _apply_state_averaging.
             ss_target = 0.5 * spin * (0.5 * spin + 1)
-            fci_solver = fci.addons.fix_spin(fci.direct_spin1.FCI(), ss=ss_target)
+            shift = self.settings.e_shift if self.settings.e_shift is not None else 0.2
+            base = fci.direct_spin0.FCI() if spin == 0 else fci.direct_spin1.FCI()
+            fci_solver = fci.addons.fix_spin(base, shift=shift, ss=ss_target)
             fci_solver.spin = spin
             fci_solver.nroots = nevpt2_nroots[i]
             fci_solver.max_cycle = max_cycle
             mc_ci.fcisolver = fci_solver
 
-            fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
+            # Warm start from the converged SA vectors of this spin block;
+            # direct_spin0 needs a symmetric (c == c.T) guess.
+            n_sa_roots = solver.nroots
+            ci_vectors = self.mc.ci[ci_offset : ci_offset + n_sa_roots]
+            if len(ci_vectors) != n_sa_roots:
+                raise RuntimeError(
+                    f"Missing SA CI vectors for spin block {i}: "
+                    f"expected {n_sa_roots}, got {len(ci_vectors)}."
+                )
+            ci_offset += n_sa_roots
+            if spin == 0:
+                ci0 = [
+                    0.5 * (c + c.T) / np.linalg.norm(0.5 * (c + c.T))
+                    for c in ci_vectors
+                ]
+            else:
+                ci0 = list(ci_vectors)
+
+            fcivec = mc_ci.kernel(self.mc.mo_coeff, ci0=ci0)[2]
 
             if not mc_ci.converged:
                 raise RuntimeError(
                     f"NEVPT2 CASCI block {i} (2S = {spin}) did not converge in "
                     f"{max_cycle} cycles; raise settings.nevpt2_ci_max_cycle."
                 )
+            if self.settings.nto_source == "casci":
+                self._analyze_states(mc_ci, fcivec, nevpt2_roots[i])
 
             # Verify the spin sector: the penalty must actually have held.
             vecs = fcivec if isinstance(fcivec, (list, tuple)) else [fcivec]
@@ -206,8 +236,6 @@ class CASSCFSolver(BaseCASSolver):
                         f"sector -- raise nevpt2_nroots and select by <S^2>."
                     )
 
-            # NTOs from the pristine wavefunction, BEFORE NEVPT2 canonicalizes.
-            self._compute_ntos(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
             e_casci_nevpt2.extend(
                 self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots[i], cas_norb)
             )
@@ -237,8 +265,9 @@ class CASSCFSolver(BaseCASSolver):
 
         fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-        # NTOs from the pristine wavefunction, BEFORE NEVPT2 canonicalizes it.
-        self._compute_ntos(mc_ci, fcivec, nevpt2_roots, cas_norb)
+        if self.settings.nto_source == "casci":
+            self._analyze_states(mc_ci, fcivec, nevpt2_roots)
+
         e_casci_nevpt2 = self._nevpt2_fci_roots(mc_ci, fcivec, nevpt2_roots, cas_norb)
 
         print("=" * 45)

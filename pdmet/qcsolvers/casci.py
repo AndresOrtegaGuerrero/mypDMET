@@ -29,7 +29,7 @@ class CASCISolver(BaseCASSolver):
         """
 
         self._setup_mf()
-        self._reset_ntos()
+        self._reset_analysis()
         cas_nelec, cas_norb = self._cas_sizes()
         self._setup_cas_object(self.mc, cas_norb, cas_nelec)
         self._set_fci_solver(fci_solver)
@@ -94,10 +94,11 @@ class CASCISolver(BaseCASSolver):
         e_cell = lib.einsum("i,i->", w, e_cells)
         self.SS = np.mean(ss_list)
 
-        # NTOs from the multi-root CASCI. Skip when nevpt2_roots is set -- the
-        # NEVPT2 path computes them, and doing both would double them.
-        if self.settings.nto and self.settings.nevpt2_roots is None:
-            self._compute_ntos(self.mc, fcivec, list(range(len(fcivec))), cas_norb)
+        # NTOs and NDOs analysis
+        if self.settings.nevpt2_nroots is None:
+            roots = list(range(len(fcivec)))
+            self._analyze_states(self.mc, fcivec, roots)
+
         return e_cell, RDM1
 
     def _run_nevpt2(self, cas_norb, cas_nelec, e_tot, solver_name):
@@ -112,8 +113,8 @@ class CASCISolver(BaseCASSolver):
         mc_ci.fcisolver.nroots = self.settings.nevpt2_nroots
         fcivec = mc_ci.kernel(self.mc.mo_coeff)[2]
 
-        # NTOs from the pristine wavefunction, BEFORE NEVPT2 canonicalizes it.
-        self._compute_ntos(mc_ci, fcivec, self.settings.nevpt2_roots, cas_norb)
+        self._analyze_states(mc_ci, fcivec, self.settings.nevpt2_roots)
+
         e_casci_nevpt2 = np.asarray(
             self._nevpt2_fci_roots(mc_ci, fcivec, self.settings.nevpt2_roots, cas_norb)
         )
