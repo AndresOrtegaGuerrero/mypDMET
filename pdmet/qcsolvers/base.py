@@ -161,6 +161,9 @@ class BaseSolver:
         else:
             raise ValueError(f"Unexpected DMguess shape: {dm.shape}")
 
+        # Gauge / orbital-energy operator: reference Fock in embedding
+        F = getattr(self, "canon_fock", self.FOCK)
+
         if self.settings.emb_orbitals == "natural":
             # Natural orbitals of the Schmidt embedding density.
             occ, C = np.linalg.eigh(dm_tot)
@@ -169,7 +172,7 @@ class BaseSolver:
             orb_occ = occ[order]
 
             # Fix the gauge within degenerate natural-orbital subspaces.
-            C = self._canon_degenerate(C, orb_occ)
+            C = self._canon_degenerate(C, orb_occ, F)
         else:  # "embedding"
             # Preserve the Schmidt impurity+bath orbitals exactly.
             C = np.eye(self.Norb)
@@ -189,7 +192,7 @@ class BaseSolver:
 
         self.mf.mo_coeff = C
         self.mf.mo_occ = mo_occ
-        self.mf.mo_energy = lib.einsum("pi,pq,qi->i", C.conj(), self.FOCK, C)
+        self.mf.mo_energy = lib.einsum("pi,pq,qi->i", C.conj(), F, C)
 
         # Bookkeeping energy of the embedding low-level density.
         self.mf.e_tot = self.mf.energy_tot(dm=self.DMguess)
@@ -201,6 +204,21 @@ class BaseSolver:
             f"E(low-level, embedding) = {self.mf.e_tot:.10f}"
         )
         self._print_container_occupations(orb_occ, nb, na)
+
+        if self.settings.container_dump:
+            lo = self._lo_view(C)
+            np.savez(
+                self.settings.container_dump,
+                C=C,
+                n=orb_occ,
+                e=self.mf.mo_energy,
+                mo_occ=mo_occ,
+                C_lo=lo[0] if lo else np.empty(0),
+                labels=np.asarray(lo[1] if lo else [], dtype=str),
+                imp_lo=lo[2] if lo else np.empty(0, int),
+            )
+            print(f"  [container] orbitals written to {self.settings.container_dump}")
+
         if self.settings.emb_orbitals == "natural":
             self._print_container_composition(C, orb_occ)
 
@@ -220,15 +238,15 @@ class BaseSolver:
         nfrac = int(((n > 0.05) & (n < 1.95)).sum())
         print(f"  [container] fractional occupations (0.05 < n < 1.95): {nfrac}")
 
-    def _canon_degenerate(self, C, n, tol=1e-6):
-        """Diagonalize FOCK within each n-degenerate NO block (gauge fix)."""
+    def _canon_degenerate(self, C, n, F, tol=1e-6):
+        """Diagonalize F within each n-degenerate NO block (gauge fix)."""
         i = 0
         while i < n.size:
             j = i + 1
             while j < n.size and abs(n[j] - n[i]) < tol:
                 j += 1
             if j - i > 1:
-                _, U = np.linalg.eigh(C[:, i:j].conj().T @ self.FOCK @ C[:, i:j])
+                _, U = np.linalg.eigh(C[:, i:j].conj().T @ F @ C[:, i:j])
                 C[:, i:j] = C[:, i:j] @ U
             i = j
         return C
