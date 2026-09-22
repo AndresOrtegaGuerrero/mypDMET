@@ -281,7 +281,10 @@ class SolverSettings:
             quantities.
         e_shift: Energy shift applied to the Hamiltonian (level shift).
         cas: Active space as ``(n_orb, n_ele)``.
-        molist: 1-based orbital indices defining the active space.
+        molist: 0-based orbital indices sorted into the active space via
+        ``mcscf.sort_mo(..., base=0)``. In container mode with
+        ``emb_orbitals="natural"`` these are natural-orbital indices as printed
+        in the ``[container]`` table.
         mo_restart: Orbitals used to restart CASSCF / DMRG-SCF.
         state_specific_: Root index for state-specific optimisation.
         state_average_: Root weights for state-averaged optimisation,
@@ -319,6 +322,10 @@ class SolverSettings:
             * ``"natural"`` -- natural orbitals of the embedding guess
               density: same space, occupation-sorted, giving a sane core
               window.
+        container_dump: Container mode only. If set, the natural orbitals actually
+        handed to the CAS/DMRG solver (after the gauge fix) are written to this
+        .npz (C, n, e, mo_occ, C_lo, labels) so ``molist`` can be chosen against
+        the exact orbitals the solver used.
         verbose: Verbosity level.
         max_memory: Memory budget for the impurity solver, in MB.
         cas_solver: Solver used inside the active space.
@@ -362,7 +369,7 @@ class SolverSettings:
     # --- Container (CAS-DMET) mode ---
     run_emb_scf: bool = True
     emb_orbitals: str = "embedding"
-
+    container_dump: Optional[str] = None  # container mode: write NOs
     verbose: int = 0
     max_memory: int = 4000
     cas_solver: CASType = CASType.FCI

@@ -520,6 +520,12 @@ class pDMET:
                 self._impOrbs,
             )
 
+        # Gauge operator for container NOs: Ref Fock projected into the embedding (No ERIs)
+        F_ao = np.asarray(to_numpy(self.local.fullfock_kpts))
+        self.qcsolver.canon_fock = lib.einsum(
+            "kum,kuv,kvn->mn", self.ao2eo.conj(), F_ao, self.ao2eo
+        ).real
+
         # Build PDFTContext only when needed
         pdft_context = None
         if "CASPDFT" in self.solver.name:
